@@ -1,10 +1,8 @@
-use std::mem::size_of;
-
-use ash::vk::{self, BufferUsageFlags, DeviceSize, PipelineVertexInputStateCreateInfo};
+use ash::vk::{self, BufferUsageFlags, PipelineVertexInputStateCreateInfo};
 use beuk::{
     ctx::RenderContext,
     memory::{BufferHandle, PipelineHandle},
-    pipeline::GraphicsPipelineDescriptor,
+    pipeline::{GraphicsPipelineDescriptor, PrimitiveState},
     shaders::Shader,
 };
 use raw_window_handle::{HasRawDisplayHandle, HasRawWindowHandle};
@@ -129,7 +127,10 @@ impl Canvas {
                     color_attachment_formats: &[ctx.render_swapchain.surface_format.format],
                     depth_attachment_format: ctx.render_swapchain.depth_image_format,
                     viewport: ctx.render_swapchain.surface_resolution,
-                    primitive: Default::default(),
+                    primitive: PrimitiveState {
+                        topology: vk::PrimitiveTopology::TRIANGLE_LIST,
+                        ..Default::default()
+                    },
                     depth_stencil: Default::default(),
                     push_constant_range: None,
                 });
@@ -168,7 +169,6 @@ impl Canvas {
                 ctx.end_rendering(command_buffer);
             },
         );
-
         ctx.present_submit(ctx.draw_command_buffer, ctx.draw_commands_reuse_fence);
     }
 }
