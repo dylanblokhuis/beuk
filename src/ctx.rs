@@ -6,7 +6,7 @@ use ash::vk::{
 use ash::{
     extensions::{
         ext::{BufferDeviceAddress, DebugUtils},
-        khr::{DynamicRendering, Surface, Swapchain, Synchronization2},
+        khr::{DynamicRendering, Surface, Swapchain},
     },
     vk::{
         CommandBuffer, ExtDescriptorIndexingFn, PhysicalDeviceBufferDeviceAddressFeaturesKHR,
@@ -95,7 +95,6 @@ pub struct RenderContext {
     pub instance: Instance,
     pub device: Device,
     pub dynamic_rendering: DynamicRendering,
-    pub synchronization2: Synchronization2,
     pub surface_loader: Surface,
     pub debug_utils_loader: DebugUtils,
     pub debug_call_back: vk::DebugUtilsMessengerEXT,
@@ -239,7 +238,6 @@ impl RenderContext {
             let device_extension_names_raw = [
                 Swapchain::NAME.as_ptr(),
                 DynamicRendering::NAME.as_ptr(),
-                Synchronization2::NAME.as_ptr(),
                 ExtDescriptorIndexingFn::NAME.as_ptr(),
                 BufferDeviceAddress::NAME.as_ptr(),
                 #[cfg(any(target_os = "macos", target_os = "ios"))]
@@ -257,8 +255,6 @@ impl RenderContext {
 
             let mut dynamic_rendering_features =
                 vk::PhysicalDeviceDynamicRenderingFeatures::default().dynamic_rendering(true);
-            let mut synchronization2_features =
-                vk::PhysicalDeviceSynchronization2Features::default().synchronization2(true);
 
             let mut buffer_features =
                 PhysicalDeviceBufferDeviceAddressFeaturesKHR::default().buffer_device_address(true);
@@ -287,7 +283,6 @@ impl RenderContext {
                 .enabled_extension_names(&device_extension_names_raw)
                 .enabled_features(&features)
                 .push_next(&mut dynamic_rendering_features)
-                .push_next(&mut synchronization2_features)
                 .push_next(&mut buffer_features)
                 .push_next(&mut indexing_features);
 
@@ -347,7 +342,6 @@ impl RenderContext {
                 Self::create_command_thread_pool(device.clone(), queue_family_index);
 
             let dynamic_rendering = DynamicRendering::new(&instance, &device);
-            let synchronization2 = Synchronization2::new(&instance, &device);
             let buffer_manager = BufferManager::new(
                 device.clone(),
                 Allocator::new(&AllocatorCreateDesc {
@@ -380,7 +374,6 @@ impl RenderContext {
                 instance,
                 device,
                 dynamic_rendering,
-                synchronization2,
                 queue_family_index,
                 pdevice,
                 immutable_samplers,
@@ -707,52 +700,29 @@ impl RenderContext {
         self.current_present_index = Some(present_index as usize);
 
         unsafe {
-            let image_memory_barrier = vk::ImageMemoryBarrier2::default()
-                .src_stage_mask(vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT)
-                .src_access_mask(vk::AccessFlags2::COLOR_ATTACHMENT_READ)
-                .old_layout(vk::ImageLayout::UNDEFINED)
-                .dst_stage_mask(vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT)
-                .dst_access_mask(vk::AccessFlags2::COLOR_ATTACHMENT_WRITE)
-                .new_layout(vk::ImageLayout::ATTACHMENT_OPTIMAL)
+            let layout_transition_barriers = vk::ImageMemoryBarrier::default()
                 .image(self.render_swapchain.present_images[present_index as usize])
-                .subresource_range(vk::ImageSubresourceRange {
-                    aspect_mask: vk::ImageAspectFlags::COLOR,
-                    layer_count: 1,
-                    level_count: 1,
-                    ..Default::default()
-                });
+                .src_access_mask(vk::AccessFlags::COLOR_ATTACHMENT_READ)
+                .dst_access_mask(vk::AccessFlags::COLOR_ATTACHMENT_WRITE)
+                .old_layout(vk::ImageLayout::UNDEFINED)
+                .new_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
+                .subresource_range(
+                    vk::ImageSubresourceRange::default()
+                        .aspect_mask(vk::ImageAspectFlags::COLOR)
+                        .layer_count(1)
+                        .level_count(1),
+                );
 
-            let dependency_info = vk::DependencyInfo::default()
-                .image_memory_barriers(std::slice::from_ref(&image_memory_barrier));
-
-            self.synchronization2
-                .cmd_pipeline_barrier2(command_buffer, &dependency_info);
+            self.device.cmd_pipeline_barrier(
+                command_buffer,
+                vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
+                vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
+                vk::DependencyFlags::empty(),
+                &[],
+                &[],
+                &[layout_transition_barriers],
+            );
         }
-
-        // unsafe {
-        //     let layout_transition_barriers = vk::ImageMemoryBarrier::default()
-        //         .image(self.render_swapchain.present_images[present_index as usize])
-        //         .src_access_mask(vk::AccessFlags::COLOR_ATTACHMENT_READ)
-        //         .dst_access_mask(vk::AccessFlags::COLOR_ATTACHMENT_WRITE)
-        //         .old_layout(vk::ImageLayout::UNDEFINED)
-        //         .new_layout(vk::ImageLayout::ATTACHMENT_OPTIMAL)
-        //         .subresource_range(
-        //             vk::ImageSubresourceRange::default()
-        //                 .aspect_mask(vk::ImageAspectFlags::COLOR)
-        //                 .layer_count(1)
-        //                 .level_count(1),
-        //         );
-
-        //     self.device.cmd_pipeline_barrier(
-        //         command_buffer,
-        //         vk::PipelineStageFlags::BOTTOM_OF_PIPE,
-        //         vk::PipelineStageFlags::LATE_FRAGMENT_TESTS,
-        //         vk::DependencyFlags::empty(),
-        //         &[],
-        //         &[],
-        //         &[layout_transition_barriers],
-        //     );
-        // }
 
         let color_attach = &[vk::RenderingAttachmentInfo::default()
             .image_view(self.render_swapchain.present_image_views[present_index as usize])
@@ -797,51 +767,28 @@ impl RenderContext {
                 panic!("No present index found, while ending rendering.");
             };
 
-            // let layout_transition_barriers = vk::ImageMemoryBarrier::default()
-            //     .image(self.render_swapchain.present_images[present_index])
-            //     .src_access_mask(vk::AccessFlags::COLOR_ATTACHMENT_WRITE)
-            //     .dst_access_mask(vk::AccessFlags::COLOR_ATTACHMENT_READ)
-            //     .old_layout(vk::ImageLayout::ATTACHMENT_OPTIMAL)
-            //     .new_layout(vk::ImageLayout::PRESENT_SRC_KHR)
-            //     .subresource_range(
-            //         vk::ImageSubresourceRange::default()
-            //             .aspect_mask(vk::ImageAspectFlags::COLOR)
-            //             .layer_count(1)
-            //             .level_count(1),
-            //     );
+            let layout_transition_barriers = vk::ImageMemoryBarrier::default()
+                .image(self.render_swapchain.present_images[present_index])
+                .src_access_mask(vk::AccessFlags::COLOR_ATTACHMENT_WRITE)
+                .dst_access_mask(vk::AccessFlags::COLOR_ATTACHMENT_READ)
+                .old_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
+                .new_layout(vk::ImageLayout::PRESENT_SRC_KHR)
+                .subresource_range(
+                    vk::ImageSubresourceRange::default()
+                        .aspect_mask(vk::ImageAspectFlags::COLOR)
+                        .layer_count(1)
+                        .level_count(1),
+                );
 
-            // self.device.cmd_pipeline_barrier(
-            //     command_buffer,
-            //     vk::PipelineStageFlags::BOTTOM_OF_PIPE,
-            //     vk::PipelineStageFlags::LATE_FRAGMENT_TESTS,
-            //     vk::DependencyFlags::empty(),
-            //     &[],
-            //     &[],
-            //     &[layout_transition_barriers],
-            // );
-
-            {
-                let image_memory_barrier = vk::ImageMemoryBarrier2::default()
-                    .src_stage_mask(vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT)
-                    .src_access_mask(vk::AccessFlags2::COLOR_ATTACHMENT_WRITE)
-                    .old_layout(vk::ImageLayout::ATTACHMENT_OPTIMAL)
-                    .dst_stage_mask(vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT)
-                    .dst_access_mask(vk::AccessFlags2::COLOR_ATTACHMENT_READ)
-                    .new_layout(vk::ImageLayout::PRESENT_SRC_KHR)
-                    .image(self.render_swapchain.present_images[present_index])
-                    .subresource_range(vk::ImageSubresourceRange {
-                        aspect_mask: vk::ImageAspectFlags::COLOR,
-                        layer_count: 1,
-                        level_count: 1,
-                        ..Default::default()
-                    });
-
-                let dependency_info = vk::DependencyInfo::default()
-                    .image_memory_barriers(std::slice::from_ref(&image_memory_barrier));
-
-                self.synchronization2
-                    .cmd_pipeline_barrier2(command_buffer, &dependency_info);
-            }
+            self.device.cmd_pipeline_barrier(
+                command_buffer,
+                vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
+                vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
+                vk::DependencyFlags::empty(),
+                &[],
+                &[],
+                &[layout_transition_barriers],
+            );
         }
     }
 
