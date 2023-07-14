@@ -1,4 +1,4 @@
-use ash::vk::{self, BufferUsageFlags, PipelineVertexInputStateCreateInfo};
+use beuk::ash::vk::{self, BufferUsageFlags, PipelineVertexInputStateCreateInfo};
 use beuk::{
     ctx::RenderContext,
     memory::{BufferHandle, PipelineHandle},
