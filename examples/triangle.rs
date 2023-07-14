@@ -21,8 +21,25 @@ fn main() {
         .build(&event_loop)
         .unwrap();
 
-    let mut ctx =
-        beuk::ctx::RenderContext::new(window.raw_display_handle(), window.raw_window_handle());
+    let mut ctx = beuk::ctx::RenderContext::new(
+        window.raw_display_handle(),
+        window.raw_window_handle(),
+        |dc| {
+            // example of enabling an extension
+            // let names = unsafe {
+            //     std::slice::from_raw_parts_mut(
+            //         dc.pp_enabled_extension_names.cast_mut(),
+            //         dc.enabled_extension_count as usize,
+            //     )
+            // };
+            // names[dc.enabled_extension_count as usize - 1] =
+            //     ash::vk::KhrSamplerYcbcrConversionFn::NAME.as_ptr();
+
+            // dc.enabled_extension_names(&*names)
+
+            dc
+        },
+    );
 
     let canvas = Canvas::new(&mut ctx);
 

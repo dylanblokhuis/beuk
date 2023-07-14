@@ -9,8 +9,9 @@ use ash::{
         khr::{DynamicRendering, Surface, Swapchain},
     },
     vk::{
-        CommandBuffer, ExtDescriptorIndexingFn, PhysicalDeviceBufferDeviceAddressFeaturesKHR,
-        PhysicalDeviceDescriptorIndexingFeatures, PresentModeKHR, SurfaceKHR, API_VERSION_1_2,
+        CommandBuffer, DeviceCreateInfo, ExtDescriptorIndexingFn,
+        PhysicalDeviceBufferDeviceAddressFeaturesKHR, PhysicalDeviceDescriptorIndexingFeatures,
+        PresentModeKHR, SurfaceKHR, API_VERSION_1_2,
     },
 };
 use ash::{vk, Entry};
@@ -135,6 +136,7 @@ impl RenderContext {
     pub fn new(
         display_handle: raw_window_handle::RawDisplayHandle,
         window_handle: raw_window_handle::RawWindowHandle,
+        customize_device_create_info: impl Fn(DeviceCreateInfo) -> DeviceCreateInfo,
     ) -> Self {
         unsafe {
             let entry = Entry::linked();
@@ -289,7 +291,7 @@ impl RenderContext {
                 .push_next(&mut dynamic_rendering_features)
                 .push_next(&mut buffer_features)
                 .push_next(&mut indexing_features);
-
+            let device_create_info = customize_device_create_info(device_create_info);
             let device: Device = instance
                 .create_device(pdevice, &device_create_info, None)
                 .unwrap();
