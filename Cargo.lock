@@ -453,7 +453,7 @@ checksum = "b6c80984affa11d98d1b88b66ac8853f143217b399d3c74116778ff8fdb4ed2e"
 [[package]]
 name = "gpu-allocator"
 version = "0.22.0"
-source = "git+https://github.com/dylanblokhuis/gpu-allocator.git#2e46127f7677dc9ff4f01c071b281d6250d04776"
+source = "git+https://github.com/dylanblokhuis/gpu-allocator.git?rev=9f1e44b038e8f8bf9529b1fb9df0f182935da16b#9f1e44b038e8f8bf9529b1fb9df0f182935da16b"
 dependencies = [
  "ash",
  "backtrace",
