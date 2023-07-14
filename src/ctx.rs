@@ -128,8 +128,6 @@ pub struct RenderContext {
 
     pub draw_commands_reuse_fence: vk::Fence,
     pub setup_commands_reuse_fence: vk::Fence,
-
-    pub current_present_index: Option<usize>,
 }
 
 impl RenderContext {
@@ -413,7 +411,6 @@ impl RenderContext {
                 debug_call_back,
                 debug_utils_loader,
                 // depth_image_memory,
-                current_present_index: None,
             }
         }
     }
@@ -561,7 +558,7 @@ impl RenderContext {
         }
     }
 
-    pub fn cleanup_swapchain(&mut self) {
+    pub fn cleanup_swapchain(&self) {
         unsafe {
             self.device
                 .destroy_image_view(self.render_swapchain.depth_image_view, None);
@@ -599,8 +596,8 @@ impl RenderContext {
             .resize_all_graphics_pipelines(self.render_swapchain.surface_resolution);
     }
 
-    pub fn record<F: FnOnce(&mut Self, vk::CommandBuffer)>(
-        &mut self,
+    pub fn record<F: FnOnce(&Self, vk::CommandBuffer)>(
+        &self,
         command_buffer: vk::CommandBuffer,
         fence: Option<vk::Fence>,
         f: F,
@@ -649,21 +646,25 @@ impl RenderContext {
     }
 
     /// Submits the command buffer to the present queue with corresponding semaphores and waits for it to finish.
-    pub fn present_submit(&mut self, command_buffer: vk::CommandBuffer, fence: vk::Fence) {
+    pub fn present_submit(&mut self, present_index: u32) {
         let submit_info = vk::SubmitInfo::default()
             .wait_semaphores(std::slice::from_ref(&self.present_complete_semaphore))
             .wait_dst_stage_mask(&[vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT])
-            .command_buffers(std::slice::from_ref(&command_buffer))
+            .command_buffers(std::slice::from_ref(&self.draw_command_buffer))
             .signal_semaphores(std::slice::from_ref(&self.rendering_complete_semaphore));
         unsafe {
             self.device
-                .queue_submit(self.present_queue, &[submit_info], fence)
+                .queue_submit(
+                    self.present_queue,
+                    &[submit_info],
+                    self.draw_commands_reuse_fence,
+                )
                 .expect("queue submit failed.");
             self.device.queue_wait_idle(self.present_queue).unwrap();
 
             let wait_semaphors = [self.rendering_complete_semaphore];
             let swapchains = [self.render_swapchain.swapchain];
-            let image_indices = [self.current_present_index.unwrap() as u32];
+            let image_indices = [present_index];
             let present_info = vk::PresentInfoKHR::default()
                 .wait_semaphores(&wait_semaphors)
                 .swapchains(&swapchains)
@@ -685,13 +686,11 @@ impl RenderContext {
             if is_resized {
                 self.recreate_swapchain();
             }
-
-            self.current_present_index = None;
         }
     }
 
-    /// must be recording, should refactor this into a new impl based on the command buffer
-    pub fn begin_rendering(&mut self, command_buffer: vk::CommandBuffer) {
+    /// Acquires the next image, transitions the image from the swapchain and records the draw command buffer. Returns the present_index
+    pub fn present_record<F: FnOnce(&Self, vk::CommandBuffer, u32)>(&self, f: F) -> u32 {
         let present_index = unsafe {
             self.render_swapchain
                 .swapchain_loader
@@ -705,62 +704,111 @@ impl RenderContext {
                 .0
         };
 
-        self.current_present_index = Some(present_index as usize);
+        self.record(
+            self.draw_command_buffer,
+            Some(self.draw_commands_reuse_fence),
+            |ctx, command_buffer| unsafe {
+                let layout_transition_barriers = vk::ImageMemoryBarrier::default()
+                    .image(self.render_swapchain.present_images[present_index as usize])
+                    .src_access_mask(vk::AccessFlags::COLOR_ATTACHMENT_READ)
+                    .dst_access_mask(vk::AccessFlags::COLOR_ATTACHMENT_WRITE)
+                    .old_layout(vk::ImageLayout::UNDEFINED)
+                    .new_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
+                    .subresource_range(
+                        vk::ImageSubresourceRange::default()
+                            .aspect_mask(vk::ImageAspectFlags::COLOR)
+                            .layer_count(1)
+                            .level_count(1),
+                    );
 
-        unsafe {
-            let layout_transition_barriers = vk::ImageMemoryBarrier::default()
-                .image(self.render_swapchain.present_images[present_index as usize])
-                .src_access_mask(vk::AccessFlags::COLOR_ATTACHMENT_READ)
-                .dst_access_mask(vk::AccessFlags::COLOR_ATTACHMENT_WRITE)
-                .old_layout(vk::ImageLayout::UNDEFINED)
-                .new_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
-                .subresource_range(
-                    vk::ImageSubresourceRange::default()
-                        .aspect_mask(vk::ImageAspectFlags::COLOR)
-                        .layer_count(1)
-                        .level_count(1),
+                self.device.cmd_pipeline_barrier(
+                    self.draw_command_buffer,
+                    vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
+                    vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
+                    vk::DependencyFlags::empty(),
+                    &[],
+                    &[],
+                    &[layout_transition_barriers],
                 );
 
-            self.device.cmd_pipeline_barrier(
-                command_buffer,
-                vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
-                vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
-                vk::DependencyFlags::empty(),
-                &[],
-                &[],
-                &[layout_transition_barriers],
-            );
-        }
+                f(ctx, command_buffer, present_index);
 
-        let color_attach = &[vk::RenderingAttachmentInfo::default()
-            .image_view(self.render_swapchain.present_image_views[present_index as usize])
-            .image_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
-            .load_op(vk::AttachmentLoadOp::CLEAR)
-            .store_op(vk::AttachmentStoreOp::STORE)
-            .clear_value(vk::ClearValue {
-                color: vk::ClearColorValue {
-                    float32: [0.1, 0.1, 0.1, 1.0],
-                },
-            })];
+                let layout_transition_barriers = vk::ImageMemoryBarrier::default()
+                    .image(self.render_swapchain.present_images[present_index as usize])
+                    .src_access_mask(vk::AccessFlags::COLOR_ATTACHMENT_WRITE)
+                    .dst_access_mask(vk::AccessFlags::COLOR_ATTACHMENT_READ)
+                    .old_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
+                    .new_layout(vk::ImageLayout::PRESENT_SRC_KHR)
+                    .subresource_range(
+                        vk::ImageSubresourceRange::default()
+                            .aspect_mask(vk::ImageAspectFlags::COLOR)
+                            .layer_count(1)
+                            .level_count(1),
+                    );
 
-        let depth_attach = &vk::RenderingAttachmentInfo::default()
-            .image_view(self.render_swapchain.depth_image_view)
-            .image_layout(vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL)
-            .load_op(vk::AttachmentLoadOp::CLEAR)
-            .store_op(vk::AttachmentStoreOp::STORE)
-            .clear_value(vk::ClearValue {
-                depth_stencil: vk::ClearDepthStencilValue {
-                    depth: 1.0,
-                    stencil: 0,
-                },
-            });
+                self.device.cmd_pipeline_barrier(
+                    command_buffer,
+                    vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
+                    vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
+                    vk::DependencyFlags::empty(),
+                    &[],
+                    &[],
+                    &[layout_transition_barriers],
+                );
+            },
+        );
 
+        present_index
+    }
+
+    /// Example
+    /// ```rs
+    /// let color_attachments = &[vk::RenderingAttachmentInfo::default()
+    ///    .image_view(self.render_swapchain.present_image_views[present_index as usize])
+    ///    .image_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
+    ///    .load_op(vk::AttachmentLoadOp::CLEAR)
+    ///    .store_op(vk::AttachmentStoreOp::STORE)
+    ///    .clear_value(vk::ClearValue {
+    ///        color: vk::ClearColorValue {
+    ///            float32: [0.1, 0.1, 0.1, 1.0],
+    ///        },
+    ///    })];
+    ///
+    /// let depth_attachment = &vk::RenderingAttachmentInfo::default()
+    ///    .image_view(self.render_swapchain.depth_image_view)
+    ///    .image_layout(vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL)
+    ///    .load_op(vk::AttachmentLoadOp::CLEAR)
+    ///    .store_op(vk::AttachmentStoreOp::STORE)
+    ///    .clear_value(vk::ClearValue {
+    ///        depth_stencil: vk::ClearDepthStencilValue {
+    ///            depth: 1.0,
+    ///            stencil: 0,
+    ///        },
+    ///    });
+    ///
+    /// ctx.begin_rendering(
+    ///     ctx.draw_command_buffer,
+    ///     color_attachments,
+    ///     Some(depth_attachment),
+    /// );
+    /// ```
+    pub fn begin_rendering(
+        &self,
+        command_buffer: vk::CommandBuffer,
+        color_attachments: &[vk::RenderingAttachmentInfo],
+        depth_attachment: Option<&vk::RenderingAttachmentInfo>,
+    ) {
+        let depth_fallback = vk::RenderingAttachmentInfo::default();
+        let depth_attachment = match depth_attachment {
+            Some(depth_attachment) => Some(depth_attachment),
+            None => Some(&depth_fallback),
+        };
         let render_pass_begin_info = vk::RenderingInfo::default()
-            .flags(vk::RenderingFlags::CONTENTS_SECONDARY_COMMAND_BUFFERS)
+            // .flags(vk::RenderingFlags::CONTENTS_SECONDARY_COMMAND_BUFFERS)
             .render_area(self.render_swapchain.surface_resolution.into())
             .layer_count(1)
-            .color_attachments(color_attach)
-            .depth_attachment(depth_attach);
+            .color_attachments(color_attachments)
+            .depth_attachment(depth_attachment.as_ref().unwrap());
 
         unsafe {
             self.dynamic_rendering
@@ -771,32 +819,6 @@ impl RenderContext {
     pub fn end_rendering(&self, command_buffer: vk::CommandBuffer) {
         unsafe {
             self.dynamic_rendering.cmd_end_rendering(command_buffer);
-            let Some(present_index) = self.current_present_index else {
-                panic!("No present index found, while ending rendering.");
-            };
-
-            let layout_transition_barriers = vk::ImageMemoryBarrier::default()
-                .image(self.render_swapchain.present_images[present_index])
-                .src_access_mask(vk::AccessFlags::COLOR_ATTACHMENT_WRITE)
-                .dst_access_mask(vk::AccessFlags::COLOR_ATTACHMENT_READ)
-                .old_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
-                .new_layout(vk::ImageLayout::PRESENT_SRC_KHR)
-                .subresource_range(
-                    vk::ImageSubresourceRange::default()
-                        .aspect_mask(vk::ImageAspectFlags::COLOR)
-                        .layer_count(1)
-                        .level_count(1),
-                );
-
-            self.device.cmd_pipeline_barrier(
-                command_buffer,
-                vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
-                vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
-                vk::DependencyFlags::empty(),
-                &[],
-                &[],
-                &[layout_transition_barriers],
-            );
         }
     }
 
