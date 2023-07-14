@@ -17,9 +17,9 @@ use ash::{vk, Entry};
 use ash::{Device, Instance};
 use gpu_allocator::vulkan::{Allocator, AllocatorCreateDesc};
 use rayon::ThreadPool;
-use std::default::Default;
 use std::ffi::CStr;
 use std::{borrow::Cow, collections::HashMap};
+use std::{cell::RefCell, default::Default};
 use std::{ops::Drop, sync::RwLock};
 use std::{os::raw::c_char, sync::Arc};
 
@@ -88,6 +88,10 @@ pub struct RenderSwapchain {
     pub depth_image_format: vk::Format,
     pub surface_format: vk::SurfaceFormatKHR,
     pub surface_resolution: vk::Extent2D,
+}
+
+thread_local! {
+    pub static COMMAND_POOL: RefCell<vk::CommandPool> = RefCell::new(vk::CommandPool::null());
 }
 
 pub struct RenderContext {
@@ -589,6 +593,8 @@ impl RenderContext {
             PresentModeKHR::FIFO,
         );
         self.render_swapchain = render_swapchain;
+        self.pipeline_manager
+            .resize_all_graphics_pipelines(self.render_swapchain.surface_resolution);
     }
 
     pub fn record<F: FnOnce(&mut Self, vk::CommandBuffer)>(
@@ -855,23 +861,26 @@ impl RenderContext {
                     .flags(vk::CommandPoolCreateFlags::RESET_COMMAND_BUFFER)
                     .queue_family_index(queue_family_index);
 
-                let pool = unsafe { device.create_command_pool(&pool_create_info, None).unwrap() };
+                COMMAND_POOL.with(|pool| {
+                    *pool.borrow_mut() =
+                        unsafe { device.create_command_pool(&pool_create_info, None).unwrap() };
 
-                let command_buffer_allocate_info = vk::CommandBufferAllocateInfo::default()
-                    .command_buffer_count(1)
-                    .command_pool(pool)
-                    .level(vk::CommandBufferLevel::SECONDARY);
+                    let command_buffer_allocate_info = vk::CommandBufferAllocateInfo::default()
+                        .command_buffer_count(1)
+                        .command_pool(*pool.borrow())
+                        .level(vk::CommandBufferLevel::SECONDARY);
 
-                let command_buffers = unsafe {
-                    device
-                        .allocate_command_buffers(&command_buffer_allocate_info)
+                    let command_buffers = unsafe {
+                        device
+                            .allocate_command_buffers(&command_buffer_allocate_info)
+                            .unwrap()
+                    };
+
+                    m_command_buffers
+                        .write()
                         .unwrap()
-                };
-
-                m_command_buffers
-                    .write()
-                    .unwrap()
-                    .insert(x, command_buffers[0]);
+                        .insert(x, command_buffers[0]);
+                });
             })
             .build()
             .unwrap();
@@ -977,16 +986,24 @@ impl Drop for RenderContext {
                 .destroy_fence(self.setup_commands_reuse_fence, None);
 
             self.cleanup_swapchain();
-            // self.device
-            //     .free_memory(self.render_swapchain.depth_image_memory, None);
-            // self.device.destroy_image_view(self.depth_image_view, None);
-            // self.device.destroy_image(self.depth_image, None);
-            // for &image_view in self.present_image_views.iter() {
-            //     self.device.destroy_image_view(image_view, None);
-            // }
+
+            // cleanup command buffers and pools
+            {
+                self.command_thread_pool.broadcast(|ctx| {
+                    COMMAND_POOL.with(|pool| {
+                        let pool = pool.take();
+                        let mut command_buffer_g = self.threaded_command_buffers.write().unwrap();
+                        let command_buffer = command_buffer_g.get(&ctx.index());
+                        if let Some(command_buffer) = command_buffer {
+                            self.device.free_command_buffers(pool, &[*command_buffer]);
+                        }
+                        self.device.destroy_command_pool(pool, None);
+                        command_buffer_g.remove(&ctx.index());
+                    });
+                });
+            }
+            self.pipeline_manager.destroy();
             self.device.destroy_command_pool(self.pool, None);
-            // self.swapchain_loader
-            //     .destroy_swapchain(self.swapchain, None);
             self.device.destroy_device(None);
             self.surface_loader.destroy_surface(self.surface, None);
             self.debug_utils_loader

@@ -372,7 +372,7 @@ impl GraphicsPipeline {
         let (descriptor_set_layouts, set_layout_info) = desc
             .fragment_shader
             .create_descriptor_set_layouts(device, shader_info);
-        
+
         let pipeline_layout = unsafe {
             device
                 .create_pipeline_layout(
@@ -489,12 +489,16 @@ impl GraphicsPipeline {
                 .unwrap()[0]
         };
 
-        let descriptor_sets = if set_layout_info.len() > 0 { desc.fragment_shader.create_descriptor_sets(
-            device,
-            shader_info,
-            &descriptor_set_layouts,
-            &set_layout_info,
-        ) } else { vec![] };
+        let descriptor_sets = if !set_layout_info.is_empty() {
+            desc.fragment_shader.create_descriptor_sets(
+                device,
+                shader_info,
+                &descriptor_set_layouts,
+                &set_layout_info,
+            )
+        } else {
+            vec![]
+        };
 
         Self {
             pipeline,

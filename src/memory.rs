@@ -205,6 +205,13 @@ impl PipelineManager {
     pub fn get_graphics_pipeline(&self, key: &PipelineHandle) -> &GraphicsPipeline {
         self.graphics_pipelines.get(key).unwrap()
     }
+    pub fn resize_all_graphics_pipelines(&mut self, extent: vk::Extent2D) {
+        for (_, pipeline) in self.graphics_pipelines.iter_mut() {
+            pipeline.viewports[0].width = extent.width as f32;
+            pipeline.viewports[0].height = extent.height as f32;
+            pipeline.scissors[0].extent = extent;
+        }
+    }
 
     fn create_immutable_samplers(device: &ash::Device) -> HashMap<SamplerDesc, vk::Sampler> {
         let texel_filters = [vk::Filter::NEAREST, vk::Filter::LINEAR];
@@ -252,5 +259,23 @@ impl PipelineManager {
         }
 
         result
+    }
+
+    pub fn destroy(&mut self) {
+        unsafe {
+            for sampler in self.immutable_shader_info.immutable_samplers.values() {
+                self.device.destroy_sampler(*sampler, None);
+            }
+            for (_, pipeline) in self.graphics_pipelines.iter_mut() {
+                self.device.destroy_pipeline_layout(pipeline.layout, None);
+                self.device.destroy_pipeline(pipeline.pipeline, None);
+            }
+        }
+    }
+}
+
+impl Drop for PipelineManager {
+    fn drop(&mut self) {
+        self.destroy();
     }
 }
