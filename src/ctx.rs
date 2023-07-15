@@ -9,9 +9,9 @@ use ash::{
         khr::{DynamicRendering, Surface, Swapchain},
     },
     vk::{
-        CommandBuffer, DeviceCreateInfo, ExtDescriptorIndexingFn,
+        CommandBuffer, DeviceCreateInfo, ExtDescriptorIndexingFn, KhrSamplerYcbcrConversionFn,
         PhysicalDeviceBufferDeviceAddressFeaturesKHR, PhysicalDeviceDescriptorIndexingFeatures,
-        PresentModeKHR, SurfaceKHR, API_VERSION_1_2,
+        PhysicalDeviceSamplerYcbcrConversionFeatures, PresentModeKHR, SurfaceKHR, API_VERSION_1_2,
     },
 };
 use ash::{vk, Entry};
@@ -244,6 +244,7 @@ impl RenderContext {
                 DynamicRendering::NAME.as_ptr(),
                 ExtDescriptorIndexingFn::NAME.as_ptr(),
                 BufferDeviceAddress::NAME.as_ptr(),
+                KhrSamplerYcbcrConversionFn::NAME.as_ptr(),
                 #[cfg(any(target_os = "macos", target_os = "ios"))]
                 KhrPortabilitySubsetFn::NAME.as_ptr(),
                 #[cfg(any(target_os = "macos", target_os = "ios"))]
@@ -255,8 +256,6 @@ impl RenderContext {
                 depth_clamp: 1,
                 ..Default::default()
             };
-            let priorities = [1.0];
-
             let mut dynamic_rendering_features =
                 vk::PhysicalDeviceDynamicRenderingFeatures::default().dynamic_rendering(true);
 
@@ -278,9 +277,12 @@ impl RenderContext {
                 .shader_storage_texel_buffer_array_dynamic_indexing(true)
                 .shader_uniform_texel_buffer_array_dynamic_indexing(true);
 
+            let mut yuv_features = PhysicalDeviceSamplerYcbcrConversionFeatures::default()
+                .sampler_ycbcr_conversion(true);
+
             let queue_info = vk::DeviceQueueCreateInfo::default()
                 .queue_family_index(queue_family_index)
-                .queue_priorities(&priorities);
+                .queue_priorities(&[1.0]);
 
             let device_create_info = vk::DeviceCreateInfo::default()
                 .queue_create_infos(std::slice::from_ref(&queue_info))
@@ -288,7 +290,9 @@ impl RenderContext {
                 .enabled_features(&features)
                 .push_next(&mut dynamic_rendering_features)
                 .push_next(&mut buffer_features)
-                .push_next(&mut indexing_features);
+                .push_next(&mut indexing_features)
+                .push_next(&mut yuv_features);
+
             let device_create_info = customize_device_create_info(device_create_info);
             let device: Device = instance
                 .create_device(pdevice, &device_create_info, None)
