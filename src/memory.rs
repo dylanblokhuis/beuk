@@ -1,4 +1,4 @@
-use ash::vk::{self};
+use ash::vk::{self, SamplerAddressMode};
 use std::{
     collections::{BTreeMap, HashMap},
     mem::size_of_val,
@@ -176,6 +176,10 @@ impl ImmutableShaderInfo {
         desc: SamplerDesc,
         format: vk::Format,
     ) -> vk::Sampler {
+        if let Some(sampler) = self.yuv_conversion_samplers.get(&(format, desc)) {
+            return *sampler;
+        }
+
         let sampler_conversion = unsafe {
             device
                 .create_sampler_ycbcr_conversion(
@@ -202,7 +206,6 @@ impl ImmutableShaderInfo {
             vk::SamplerYcbcrConversionInfo::default().conversion(sampler_conversion);
 
         let sampler = unsafe {
-            let anisotropy_enable = desc.texel_filter == vk::Filter::LINEAR;
             device
                 .create_sampler(
                     &vk::SamplerCreateInfo::default()
@@ -214,7 +217,8 @@ impl ImmutableShaderInfo {
                         .address_mode_w(desc.address_modes)
                         .max_lod(vk::LOD_CLAMP_NONE)
                         .max_anisotropy(16.0)
-                        .anisotropy_enable(anisotropy_enable)
+                        .anisotropy_enable(false)
+                        .unnormalized_coordinates(false)
                         .push_next(&mut conversion_info),
                     None,
                 )
@@ -234,7 +238,7 @@ pub struct PipelineManager {
     device: ash::Device,
     // handle is serialized pipeline state?
     graphics_pipelines: HashMap<PipelineHandle, GraphicsPipeline>,
-    immutable_shader_info: ImmutableShaderInfo,
+    pub immutable_shader_info: ImmutableShaderInfo,
 }
 
 impl PipelineManager {

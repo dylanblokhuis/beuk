@@ -233,7 +233,8 @@ impl Shader {
                                             SamplerDesc {
                                                 texel_filter: Filter::LINEAR,
                                                 mipmap_mode: SamplerMipmapMode::LINEAR,
-                                                address_modes: SamplerAddressMode::CLAMP_TO_BORDER,
+                                                // Must always be CLAMP_TO_EDGE
+                                                address_modes: SamplerAddressMode::CLAMP_TO_EDGE,
                                             },
                                             vk::Format::G8_B8R8_2PLANE_420_UNORM,
                                         ),
