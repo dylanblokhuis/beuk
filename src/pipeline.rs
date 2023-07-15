@@ -522,6 +522,16 @@ impl GraphicsPipeline {
             );
             device.cmd_set_viewport(command_buffer, 0, &self.viewports);
             device.cmd_set_scissor(command_buffer, 0, &self.scissors);
+            if !self.descriptor_sets.is_empty() {
+                device.cmd_bind_descriptor_sets(
+                    command_buffer,
+                    vk::PipelineBindPoint::GRAPHICS,
+                    self.layout,
+                    0,
+                    &self.descriptor_sets,
+                    &[],
+                );
+            }
         }
     }
 }
