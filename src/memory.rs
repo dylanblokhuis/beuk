@@ -177,6 +177,11 @@ impl ImmutableShaderInfo {
         desc: SamplerDesc,
         format: vk::Format,
     ) -> (vk::SamplerYcbcrConversion, vk::Sampler) {
+        // to avoid creating the same sampler twice
+        if let Some(samplers) = self.yuv_conversion_samplers.get(&(format, desc)) {
+            return *samplers;
+        }
+
         let sampler_conversion = unsafe {
             device
                 .create_sampler_ycbcr_conversion(
