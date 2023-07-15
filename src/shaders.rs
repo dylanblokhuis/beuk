@@ -230,17 +230,17 @@ impl Shader {
                                     .immutable_samplers(
                                         if binding.name.contains("LinearYUV420P") {
                                             std::slice::from_ref(samplers.add(
-                                        shader_info.get_yuv_conversion_sampler(
-                                            device,
-                                            SamplerDesc {
-                                                texel_filter: Filter::LINEAR,
-                                                mipmap_mode: SamplerMipmapMode::LINEAR,
-                                                // Must always be CLAMP_TO_EDGE
-                                                address_modes: SamplerAddressMode::CLAMP_TO_EDGE,
-                                            },
-                                            vk::Format::G8_B8R8_2PLANE_420_UNORM,
-                                        ).1,
-                                    ))
+                                                shader_info.get_yuv_conversion_sampler(
+                                                    device,
+                                                    SamplerDesc {
+                                                        texel_filter: Filter::LINEAR,
+                                                        mipmap_mode: SamplerMipmapMode::LINEAR,
+                                                        // Must always be CLAMP_TO_EDGE
+                                                        address_modes: SamplerAddressMode::CLAMP_TO_EDGE,
+                                                    },
+                                                    vk::Format::G8_B8_R8_3PLANE_420_UNORM,
+                                                ).1,
+                                            ))
                                         } else {
                                             &[]
                                         },
