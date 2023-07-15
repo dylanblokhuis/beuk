@@ -103,7 +103,6 @@ pub struct RenderContext {
     pub surface_loader: Surface,
     pub debug_utils_loader: DebugUtils,
     pub debug_call_back: vk::DebugUtilsMessengerEXT,
-    pub immutable_samplers: HashMap<SamplerDesc, vk::Sampler>,
     pub max_descriptor_count: u32,
     pub command_thread_pool: ThreadPool,
     pub threaded_command_buffers: Arc<RwLock<HashMap<usize, CommandBuffer>>>,
@@ -345,7 +344,6 @@ impl RenderContext {
                 .create_semaphore(&semaphore_create_info, None)
                 .unwrap();
 
-            let immutable_samplers = Self::create_samplers(&device);
             let (command_thread_pool, threaded_command_buffers) =
                 Self::create_command_thread_pool(device.clone(), queue_family_index);
 
@@ -384,7 +382,6 @@ impl RenderContext {
                 dynamic_rendering,
                 queue_family_index,
                 pdevice,
-                immutable_samplers,
                 command_thread_pool,
                 threaded_command_buffers,
                 render_swapchain,
@@ -914,21 +911,6 @@ impl RenderContext {
             .unwrap();
 
         (pool, m_command_buffers_clone)
-    }
-
-    pub fn get_sampler(&self, desc: SamplerDesc) -> vk::Sampler {
-        *self
-            .immutable_samplers
-            .get(&desc)
-            .unwrap_or_else(|| panic!("Sampler not found: {:?}", desc))
-    }
-
-    pub fn get_default_sampler(&self) -> vk::Sampler {
-        self.get_sampler(SamplerDesc {
-            texel_filter: vk::Filter::LINEAR,
-            mipmap_mode: vk::SamplerMipmapMode::LINEAR,
-            address_modes: vk::SamplerAddressMode::REPEAT,
-        })
     }
 
     // pub fn copy_buffer_to_texture(&self, buffer: &Buffer, texture: &Image) {

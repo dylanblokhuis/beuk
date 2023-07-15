@@ -338,7 +338,7 @@ impl GraphicsPipeline {
     pub fn new(
         device: &Device,
         desc: GraphicsPipelineDescriptor,
-        shader_info: &ImmutableShaderInfo,
+        shader_info: &mut ImmutableShaderInfo,
     ) -> Self {
         let multisample_state_info: vk::PipelineMultisampleStateCreateInfo<'_> =
             vk::PipelineMultisampleStateCreateInfo {

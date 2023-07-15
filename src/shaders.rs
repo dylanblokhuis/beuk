@@ -4,7 +4,7 @@ use std::{
     path::Path,
 };
 
-use ash::vk::{self};
+use ash::vk::{self, Filter, SamplerAddressMode, SamplerMipmapMode};
 use rspirv_reflect::BindingCount;
 use shaderc::CompilationArtifact;
 
@@ -127,7 +127,7 @@ impl Shader {
     pub fn create_descriptor_set_layouts(
         &self,
         device: &ash::Device,
-        shader_info: &ImmutableShaderInfo,
+        shader_info: &mut ImmutableShaderInfo,
     ) -> (
         Vec<vk::DescriptorSetLayout>,
         Vec<HashMap<u32, vk::DescriptorType>>,
@@ -225,7 +225,22 @@ impl Shader {
                                     }
                                     _ => unimplemented!("{:?}", binding),
                                 })
-                                .stage_flags(stage_flags),
+                                .stage_flags(stage_flags)
+                                .immutable_samplers(if binding.name.contains("LinearYUV420P") {
+                                    std::slice::from_ref(samplers.add(
+                                        shader_info.get_yuv_conversion_sampler(
+                                            device,
+                                            SamplerDesc {
+                                                texel_filter: Filter::LINEAR,
+                                                mipmap_mode: SamplerMipmapMode::LINEAR,
+                                                address_modes: SamplerAddressMode::CLAMP_TO_BORDER,
+                                            },
+                                            vk::Format::G8_B8R8_2PLANE_420_UNORM,
+                                        ),
+                                    ))
+                                } else {
+                                    &[]
+                                }),
                         ),
 
                         rspirv_reflect::DescriptorType::SAMPLER => {

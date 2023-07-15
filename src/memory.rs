@@ -162,11 +162,68 @@ impl Drop for TextureManager {
 
 pub struct ImmutableShaderInfo {
     pub immutable_samplers: HashMap<SamplerDesc, vk::Sampler>,
+    pub yuv_conversion_samplers: HashMap<(vk::Format, SamplerDesc), vk::Sampler>,
     pub max_descriptor_count: u32,
 }
 impl ImmutableShaderInfo {
     pub fn get_sampler(&self, desc: &SamplerDesc) -> vk::Sampler {
         *self.immutable_samplers.get(desc).unwrap()
+    }
+
+    pub fn get_yuv_conversion_sampler(
+        &mut self,
+        device: &ash::Device,
+        desc: SamplerDesc,
+        format: vk::Format,
+    ) -> vk::Sampler {
+        let sampler_conversion = unsafe {
+            device
+                .create_sampler_ycbcr_conversion(
+                    &vk::SamplerYcbcrConversionCreateInfo::default()
+                        .ycbcr_model(vk::SamplerYcbcrModelConversion::YCBCR_709)
+                        .ycbcr_range(vk::SamplerYcbcrRange::ITU_NARROW)
+                        .components(vk::ComponentMapping {
+                            r: vk::ComponentSwizzle::IDENTITY,
+                            g: vk::ComponentSwizzle::IDENTITY,
+                            b: vk::ComponentSwizzle::IDENTITY,
+                            a: vk::ComponentSwizzle::IDENTITY,
+                        })
+                        .chroma_filter(vk::Filter::LINEAR)
+                        .x_chroma_offset(vk::ChromaLocation::MIDPOINT)
+                        .y_chroma_offset(vk::ChromaLocation::MIDPOINT)
+                        .force_explicit_reconstruction(false)
+                        .format(format),
+                    None,
+                )
+                .unwrap()
+        };
+
+        let mut conversion_info =
+            vk::SamplerYcbcrConversionInfo::default().conversion(sampler_conversion);
+
+        let sampler = unsafe {
+            let anisotropy_enable = desc.texel_filter == vk::Filter::LINEAR;
+            device
+                .create_sampler(
+                    &vk::SamplerCreateInfo::default()
+                        .mag_filter(desc.texel_filter)
+                        .min_filter(desc.texel_filter)
+                        .mipmap_mode(desc.mipmap_mode)
+                        .address_mode_u(desc.address_modes)
+                        .address_mode_v(desc.address_modes)
+                        .address_mode_w(desc.address_modes)
+                        .max_lod(vk::LOD_CLAMP_NONE)
+                        .max_anisotropy(16.0)
+                        .anisotropy_enable(anisotropy_enable)
+                        .push_next(&mut conversion_info),
+                    None,
+                )
+                .unwrap()
+        };
+
+        self.yuv_conversion_samplers.insert((format, desc), sampler);
+
+        *self.yuv_conversion_samplers.get(&(format, desc)).unwrap()
     }
 }
 
@@ -188,6 +245,7 @@ impl PipelineManager {
             immutable_shader_info: ImmutableShaderInfo {
                 immutable_samplers: Self::create_immutable_samplers(&device),
                 max_descriptor_count: device_properties.limits.max_descriptor_set_samplers,
+                yuv_conversion_samplers: HashMap::new(),
             },
         }
     }
@@ -195,7 +253,7 @@ impl PipelineManager {
     pub fn create_graphics_pipeline(&mut self, desc: GraphicsPipelineDescriptor) -> PipelineHandle {
         let key = PipelineHandle(serde_hashkey::to_key(&desc).unwrap());
         let pipeline: GraphicsPipeline =
-            GraphicsPipeline::new(&self.device, desc, &self.immutable_shader_info);
+            GraphicsPipeline::new(&self.device, desc, &mut self.immutable_shader_info);
         self.graphics_pipelines.insert(key.clone(), pipeline);
         self.graphics_pipelines.get(&key).unwrap();
 
