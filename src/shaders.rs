@@ -190,44 +190,46 @@ impl Shader {
                         | rspirv_reflect::DescriptorType::STORAGE_BUFFER
                         | rspirv_reflect::DescriptorType::STORAGE_BUFFER_DYNAMIC
                         | rspirv_reflect::DescriptorType::COMBINED_IMAGE_SAMPLER
-                        | rspirv_reflect::DescriptorType::SAMPLED_IMAGE => bindings.push(
-                            vk::DescriptorSetLayoutBinding::default()
-                                .binding(*binding_index)
-                                .descriptor_count(descriptor_count) // TODO
-                                .descriptor_type(match binding.ty {
-                                    rspirv_reflect::DescriptorType::UNIFORM_BUFFER => {
-                                        vk::DescriptorType::UNIFORM_BUFFER
-                                    }
-                                    rspirv_reflect::DescriptorType::UNIFORM_BUFFER_DYNAMIC => {
-                                        vk::DescriptorType::UNIFORM_BUFFER_DYNAMIC
-                                    }
-                                    rspirv_reflect::DescriptorType::UNIFORM_TEXEL_BUFFER => {
-                                        vk::DescriptorType::UNIFORM_TEXEL_BUFFER
-                                    }
-                                    rspirv_reflect::DescriptorType::STORAGE_IMAGE => {
-                                        vk::DescriptorType::STORAGE_IMAGE
-                                    }
-                                    rspirv_reflect::DescriptorType::STORAGE_BUFFER => {
-                                        if binding.name.ends_with("_dyn") {
-                                            vk::DescriptorType::STORAGE_BUFFER_DYNAMIC
-                                        } else {
-                                            vk::DescriptorType::STORAGE_BUFFER
+                        | rspirv_reflect::DescriptorType::SAMPLED_IMAGE => {
+                            bindings.push(
+                                vk::DescriptorSetLayoutBinding::default()
+                                    .binding(*binding_index)
+                                    .descriptor_count(descriptor_count) // TODO
+                                    .descriptor_type(match binding.ty {
+                                        rspirv_reflect::DescriptorType::UNIFORM_BUFFER => {
+                                            vk::DescriptorType::UNIFORM_BUFFER
                                         }
-                                    }
-                                    rspirv_reflect::DescriptorType::STORAGE_BUFFER_DYNAMIC => {
-                                        vk::DescriptorType::STORAGE_BUFFER_DYNAMIC
-                                    }
-                                    rspirv_reflect::DescriptorType::COMBINED_IMAGE_SAMPLER => {
-                                        vk::DescriptorType::COMBINED_IMAGE_SAMPLER
-                                    }
-                                    rspirv_reflect::DescriptorType::SAMPLED_IMAGE => {
-                                        vk::DescriptorType::SAMPLED_IMAGE
-                                    }
-                                    _ => unimplemented!("{:?}", binding),
-                                })
-                                .stage_flags(stage_flags)
-                                .immutable_samplers(if binding.name.contains("LinearYUV420P") {
-                                    std::slice::from_ref(samplers.add(
+                                        rspirv_reflect::DescriptorType::UNIFORM_BUFFER_DYNAMIC => {
+                                            vk::DescriptorType::UNIFORM_BUFFER_DYNAMIC
+                                        }
+                                        rspirv_reflect::DescriptorType::UNIFORM_TEXEL_BUFFER => {
+                                            vk::DescriptorType::UNIFORM_TEXEL_BUFFER
+                                        }
+                                        rspirv_reflect::DescriptorType::STORAGE_IMAGE => {
+                                            vk::DescriptorType::STORAGE_IMAGE
+                                        }
+                                        rspirv_reflect::DescriptorType::STORAGE_BUFFER => {
+                                            if binding.name.ends_with("_dyn") {
+                                                vk::DescriptorType::STORAGE_BUFFER_DYNAMIC
+                                            } else {
+                                                vk::DescriptorType::STORAGE_BUFFER
+                                            }
+                                        }
+                                        rspirv_reflect::DescriptorType::STORAGE_BUFFER_DYNAMIC => {
+                                            vk::DescriptorType::STORAGE_BUFFER_DYNAMIC
+                                        }
+                                        rspirv_reflect::DescriptorType::COMBINED_IMAGE_SAMPLER => {
+                                            vk::DescriptorType::COMBINED_IMAGE_SAMPLER
+                                        }
+                                        rspirv_reflect::DescriptorType::SAMPLED_IMAGE => {
+                                            vk::DescriptorType::SAMPLED_IMAGE
+                                        }
+                                        _ => unimplemented!("{:?}", binding),
+                                    })
+                                    .stage_flags(stage_flags)
+                                    .immutable_samplers(
+                                        if binding.name.contains("LinearYUV420P") {
+                                            std::slice::from_ref(samplers.add(
                                         shader_info.get_yuv_conversion_sampler(
                                             device,
                                             SamplerDesc {
@@ -237,12 +239,14 @@ impl Shader {
                                                 address_modes: SamplerAddressMode::CLAMP_TO_EDGE,
                                             },
                                             vk::Format::G8_B8R8_2PLANE_420_UNORM,
-                                        ),
+                                        ).1,
                                     ))
-                                } else {
-                                    &[]
-                                }),
-                        ),
+                                        } else {
+                                            &[]
+                                        },
+                                    ),
+                            )
+                        }
 
                         rspirv_reflect::DescriptorType::SAMPLER => {
                             let name_prefix = "sampler_";

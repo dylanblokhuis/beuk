@@ -162,7 +162,8 @@ impl Drop for TextureManager {
 
 pub struct ImmutableShaderInfo {
     pub immutable_samplers: HashMap<SamplerDesc, vk::Sampler>,
-    pub yuv_conversion_samplers: HashMap<(vk::Format, SamplerDesc), vk::Sampler>,
+    pub yuv_conversion_samplers:
+        HashMap<(vk::Format, SamplerDesc), (vk::SamplerYcbcrConversion, vk::Sampler)>,
     pub max_descriptor_count: u32,
 }
 impl ImmutableShaderInfo {
@@ -175,11 +176,7 @@ impl ImmutableShaderInfo {
         device: &ash::Device,
         desc: SamplerDesc,
         format: vk::Format,
-    ) -> vk::Sampler {
-        if let Some(sampler) = self.yuv_conversion_samplers.get(&(format, desc)) {
-            return *sampler;
-        }
-
+    ) -> (vk::SamplerYcbcrConversion, vk::Sampler) {
         let sampler_conversion = unsafe {
             device
                 .create_sampler_ycbcr_conversion(
@@ -225,7 +222,8 @@ impl ImmutableShaderInfo {
                 .unwrap()
         };
 
-        self.yuv_conversion_samplers.insert((format, desc), sampler);
+        self.yuv_conversion_samplers
+            .insert((format, desc), (sampler_conversion, sampler));
 
         *self.yuv_conversion_samplers.get(&(format, desc)).unwrap()
     }
