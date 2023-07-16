@@ -186,6 +186,21 @@ impl Shader {
                         .1,
                 );
 
+                let yuv_2_plane_hdr = *samplers.add(
+                    shader_info
+                        .get_yuv_conversion_sampler(
+                            device,
+                            SamplerDesc {
+                                texel_filter: Filter::LINEAR,
+                                mipmap_mode: SamplerMipmapMode::LINEAR,
+                                // Must always be CLAMP_TO_EDGE
+                                address_modes: SamplerAddressMode::CLAMP_TO_EDGE,
+                            },
+                            vk::Format::G10X6_B10X6R10X6_2PLANE_420_UNORM_3PACK16,
+                        )
+                        .1,
+                );
+
                 let yuv_3_plane_hdr = *samplers.add(
                     shader_info
                         .get_yuv_conversion_sampler(
@@ -201,7 +216,7 @@ impl Shader {
                         .1,
                 );
 
-                let yuv_samplers = &[yuv_3_plane, yuv_2_plane, yuv_3_plane_hdr];
+                let yuv_samplers = &[yuv_2_plane, yuv_3_plane, yuv_2_plane_hdr, yuv_3_plane_hdr];
 
                 for (binding_index, binding) in set.iter() {
                     // if binding.name.starts_with("u_") {
