@@ -156,6 +156,53 @@ impl Shader {
 
                 let mut set_layout_create_flags = vk::DescriptorSetLayoutCreateFlags::empty();
 
+                let yuv_2_plane = *samplers.add(
+                    shader_info
+                        .get_yuv_conversion_sampler(
+                            device,
+                            SamplerDesc {
+                                texel_filter: Filter::LINEAR,
+                                mipmap_mode: SamplerMipmapMode::LINEAR,
+                                // Must always be CLAMP_TO_EDGE
+                                address_modes: SamplerAddressMode::CLAMP_TO_EDGE,
+                            },
+                            vk::Format::G8_B8R8_2PLANE_420_UNORM,
+                        )
+                        .1,
+                );
+
+                let yuv_3_plane = *samplers.add(
+                    shader_info
+                        .get_yuv_conversion_sampler(
+                            device,
+                            SamplerDesc {
+                                texel_filter: Filter::LINEAR,
+                                mipmap_mode: SamplerMipmapMode::LINEAR,
+                                // Must always be CLAMP_TO_EDGE
+                                address_modes: SamplerAddressMode::CLAMP_TO_EDGE,
+                            },
+                            vk::Format::G8_B8_R8_3PLANE_420_UNORM,
+                        )
+                        .1,
+                );
+
+                let yuv_3_plane_hdr = *samplers.add(
+                    shader_info
+                        .get_yuv_conversion_sampler(
+                            device,
+                            SamplerDesc {
+                                texel_filter: Filter::LINEAR,
+                                mipmap_mode: SamplerMipmapMode::LINEAR,
+                                // Must always be CLAMP_TO_EDGE
+                                address_modes: SamplerAddressMode::CLAMP_TO_EDGE,
+                            },
+                            vk::Format::G10X6_B10X6_R10X6_3PLANE_420_UNORM_3PACK16,
+                        )
+                        .1,
+                );
+
+                let yuv_samplers = &[yuv_3_plane, yuv_2_plane, yuv_3_plane_hdr];
+
                 for (binding_index, binding) in set.iter() {
                     // if binding.name.starts_with("u_") {
                     //     binding_flags[bindings.len()] =
@@ -229,18 +276,7 @@ impl Shader {
                                     .stage_flags(stage_flags)
                                     .immutable_samplers(
                                         if binding.name.contains("LinearYUV420P") {
-                                            std::slice::from_ref(samplers.add(
-                                                shader_info.get_yuv_conversion_sampler(
-                                                    device,
-                                                    SamplerDesc {
-                                                        texel_filter: Filter::LINEAR,
-                                                        mipmap_mode: SamplerMipmapMode::LINEAR,
-                                                        // Must always be CLAMP_TO_EDGE
-                                                        address_modes: SamplerAddressMode::CLAMP_TO_EDGE,
-                                                    },
-                                                    vk::Format::G8_B8_R8_3PLANE_420_UNORM,
-                                                ).1,
-                                            ))
+                                            yuv_samplers
                                         } else {
                                             &[]
                                         },
