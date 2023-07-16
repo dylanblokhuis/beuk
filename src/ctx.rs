@@ -690,9 +690,8 @@ impl RenderContext {
         }
     }
 
-    /// Acquires the next image, transitions the image from the swapchain and records the draw command buffer. Returns the present_index
-    pub fn present_record<F: FnOnce(&Self, vk::CommandBuffer, u32)>(&self, f: F) -> u32 {
-        let present_index = unsafe {
+    pub fn acquire_present_index(&self) -> u32 {
+        unsafe {
             self.render_swapchain
                 .swapchain_loader
                 .acquire_next_image(
@@ -703,8 +702,15 @@ impl RenderContext {
                 )
                 .unwrap()
                 .0
-        };
+        }
+    }
 
+    /// Acquires the next image, transitions the image from the swapchain and records the draw command buffer. Returns the present_index
+    pub fn present_record<F: FnOnce(&Self, vk::CommandBuffer, u32)>(
+        &self,
+        present_index: u32,
+        f: F,
+    ) {
         self.record(
             self.draw_command_buffer,
             Some(self.draw_commands_reuse_fence),
@@ -758,8 +764,6 @@ impl RenderContext {
                 );
             },
         );
-
-        present_index
     }
 
     /// Example

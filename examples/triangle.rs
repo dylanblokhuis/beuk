@@ -159,7 +159,9 @@ impl Canvas {
     }
 
     pub fn draw(&self, ctx: &mut RenderContext) {
-        let present_index = ctx.present_record(|ctx, command_buffer, present_index| unsafe {
+        let present_index = ctx.acquire_present_index();
+
+        ctx.present_record(present_index, |ctx, command_buffer, present_index| unsafe {
             let color_attachments = &[vk::RenderingAttachmentInfo::default()
                 .image_view(ctx.render_swapchain.present_image_views[present_index as usize])
                 .image_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
