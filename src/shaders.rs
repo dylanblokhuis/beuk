@@ -305,6 +305,18 @@ impl Shader {
                         }
 
                         rspirv_reflect::DescriptorType::SAMPLER => {
+                            if binding.name == "u_yuv_samplers" {
+                                bindings.push(
+                                    vk::DescriptorSetLayoutBinding::default()
+                                        .descriptor_count(descriptor_count)
+                                        .descriptor_type(vk::DescriptorType::SAMPLER)
+                                        .stage_flags(stage_flags)
+                                        .binding(*binding_index)
+                                        .immutable_samplers(yuv_samplers),
+                                );
+                                continue;
+                            }
+
                             let name_prefix = "sampler_";
                             if let Some(mut spec) = binding.name.strip_prefix(name_prefix) {
                                 let texel_filter = match &spec[..1] {
@@ -331,7 +343,7 @@ impl Shader {
 
                                 bindings.push(
                                     vk::DescriptorSetLayoutBinding::default()
-                                        .descriptor_count(1)
+                                        .descriptor_count(descriptor_count)
                                         .descriptor_type(vk::DescriptorType::SAMPLER)
                                         .stage_flags(stage_flags)
                                         .binding(*binding_index)
