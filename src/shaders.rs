@@ -231,12 +231,27 @@ impl Shader {
                     );
 
                     match binding.ty {
+                        rspirv_reflect::DescriptorType::COMBINED_IMAGE_SAMPLER => {
+                            bindings.push(
+                                vk::DescriptorSetLayoutBinding::default()
+                                    .binding(*binding_index)
+                                    .descriptor_count(descriptor_count) // TODO
+                                    .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+                                    .stage_flags(stage_flags)
+                                    .immutable_samplers(
+                                        if binding.name.contains("LinearYUV420P") {
+                                            yuv_samplers
+                                        } else {
+                                            &[]
+                                        },
+                                    ),
+                            )
+                        }
                         rspirv_reflect::DescriptorType::UNIFORM_BUFFER
                         | rspirv_reflect::DescriptorType::UNIFORM_TEXEL_BUFFER
                         | rspirv_reflect::DescriptorType::STORAGE_IMAGE
                         | rspirv_reflect::DescriptorType::STORAGE_BUFFER
                         | rspirv_reflect::DescriptorType::STORAGE_BUFFER_DYNAMIC
-                        | rspirv_reflect::DescriptorType::COMBINED_IMAGE_SAMPLER
                         | rspirv_reflect::DescriptorType::SAMPLED_IMAGE => {
                             bindings.push(
                                 vk::DescriptorSetLayoutBinding::default()
@@ -265,22 +280,12 @@ impl Shader {
                                         rspirv_reflect::DescriptorType::STORAGE_BUFFER_DYNAMIC => {
                                             vk::DescriptorType::STORAGE_BUFFER_DYNAMIC
                                         }
-                                        rspirv_reflect::DescriptorType::COMBINED_IMAGE_SAMPLER => {
-                                            vk::DescriptorType::COMBINED_IMAGE_SAMPLER
-                                        }
                                         rspirv_reflect::DescriptorType::SAMPLED_IMAGE => {
                                             vk::DescriptorType::SAMPLED_IMAGE
                                         }
                                         _ => unimplemented!("{:?}", binding),
                                     })
-                                    .stage_flags(stage_flags)
-                                    .immutable_samplers(
-                                        if binding.name.contains("LinearYUV420P") {
-                                            yuv_samplers
-                                        } else {
-                                            &[]
-                                        },
-                                    ),
+                                    .stage_flags(stage_flags),
                             )
                         }
 
