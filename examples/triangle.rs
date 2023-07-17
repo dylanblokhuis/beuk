@@ -1,4 +1,5 @@
 use beuk::ash::vk::{self, BufferUsageFlags, PipelineVertexInputStateCreateInfo};
+use beuk::pipeline::BlendState;
 use beuk::{
     ctx::RenderContext,
     memory::{BufferHandle, PipelineHandle},
@@ -94,15 +95,15 @@ impl Canvas {
             bytemuck::cast_slice(&[
                 Vertex {
                     pos: [-1.0, 1.0, 0.0, 1.0],
-                    color: [0.0, 1.0, 0.0, 1.0],
+                    color: [0.0, 1.0, 0.0, 0.5],
                 },
                 Vertex {
                     pos: [1.0, 1.0, 0.0, 1.0],
-                    color: [0.0, 0.0, 1.0, 1.0],
+                    color: [0.0, 0.0, 1.0, 0.5],
                 },
                 Vertex {
                     pos: [0.0, -1.0, 0.0, 1.0],
-                    color: [1.0, 0.0, 0.0, 1.0],
+                    color: [1.0, 0.0, 0.0, 0.5],
                 },
             ]),
             BufferUsageFlags::VERTEX_BUFFER,
@@ -150,6 +151,7 @@ impl Canvas {
                     },
                     depth_stencil: Default::default(),
                     push_constant_range: None,
+                    blend: vec![BlendState::ALPHA_BLENDING],
                 });
         Self {
             pipeline_handle,

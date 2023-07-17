@@ -295,6 +295,175 @@ pub struct PrimitiveState {
     pub conservative: bool,
 }
 
+/// Alpha blend factor.
+///
+/// Alpha blending is very complicated: see the OpenGL or Vulkan spec for more information.
+///
+/// Corresponds to [WebGPU `GPUBlendFactor`](
+/// https://gpuweb.github.io/gpuweb/#enumdef-gpublendfactor).
+#[repr(C)]
+#[derive(Copy, Clone, Debug, Hash, Eq, PartialEq)]
+pub enum BlendFactor {
+    /// 0.0
+    Zero = 0,
+    /// 1.0
+    One = 1,
+    /// S.component
+    Src = 2,
+    /// 1.0 - S.component
+    OneMinusSrc = 3,
+    /// S.alpha
+    SrcAlpha = 4,
+    /// 1.0 - S.alpha
+    OneMinusSrcAlpha = 5,
+    /// D.component
+    Dst = 6,
+    /// 1.0 - D.component
+    OneMinusDst = 7,
+    /// D.alpha
+    DstAlpha = 8,
+    /// 1.0 - D.alpha
+    OneMinusDstAlpha = 9,
+    /// min(S.alpha, 1.0 - D.alpha)
+    SrcAlphaSaturated = 10,
+    /// Constant
+    Constant = 11,
+    /// 1.0 - Constant
+    OneMinusConstant = 12,
+}
+
+#[repr(C)]
+#[derive(Copy, Clone, Debug, Default, Hash, Eq, PartialEq)]
+pub enum BlendOperation {
+    /// Src + Dst
+    #[default]
+    Add = 0,
+    /// Src - Dst
+    Subtract = 1,
+    /// Dst - Src
+    ReverseSubtract = 2,
+    /// min(Src, Dst)
+    Min = 3,
+    /// max(Src, Dst)
+    Max = 4,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct BlendComponent {
+    /// Multiplier for the source, which is produced by the fragment shader.
+    pub src_factor: BlendFactor,
+    /// Multiplier for the destination, which is stored in the target.
+    pub dst_factor: BlendFactor,
+    /// The binary operation applied to the source and destination,
+    /// multiplied by their respective factors.
+    pub operation: BlendOperation,
+}
+
+impl BlendComponent {
+    /// Default blending state that replaces destination with the source.
+    pub const REPLACE: Self = Self {
+        src_factor: BlendFactor::One,
+        dst_factor: BlendFactor::Zero,
+        operation: BlendOperation::Add,
+    };
+
+    /// Blend state of (1 * src) + ((1 - src_alpha) * dst)
+    pub const OVER: Self = Self {
+        src_factor: BlendFactor::One,
+        dst_factor: BlendFactor::OneMinusSrcAlpha,
+        operation: BlendOperation::Add,
+    };
+
+    /// Returns true if the state relies on the constant color, which is
+    /// set independently on a render command encoder.
+    pub fn uses_constant(&self) -> bool {
+        match (self.src_factor, self.dst_factor) {
+            (BlendFactor::Constant, _)
+            | (BlendFactor::OneMinusConstant, _)
+            | (_, BlendFactor::Constant)
+            | (_, BlendFactor::OneMinusConstant) => true,
+            (_, _) => false,
+        }
+    }
+}
+
+impl Default for BlendComponent {
+    fn default() -> Self {
+        Self::REPLACE
+    }
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct BlendState {
+    /// Color equation.
+    pub color: BlendComponent,
+    /// Alpha equation.
+    pub alpha: BlendComponent,
+}
+
+impl BlendState {
+    /// Blend mode that does no color blending, just overwrites the output with the contents of the shader.
+    pub const REPLACE: Self = Self {
+        color: BlendComponent::REPLACE,
+        alpha: BlendComponent::REPLACE,
+    };
+
+    /// Blend mode that does standard alpha blending with non-premultiplied alpha.
+    pub const ALPHA_BLENDING: Self = Self {
+        color: BlendComponent {
+            src_factor: BlendFactor::SrcAlpha,
+            dst_factor: BlendFactor::OneMinusSrcAlpha,
+            operation: BlendOperation::Add,
+        },
+        alpha: BlendComponent::OVER,
+    };
+
+    /// Blend mode that does standard alpha blending with premultiplied alpha.
+    pub const PREMULTIPLIED_ALPHA_BLENDING: Self = Self {
+        color: BlendComponent::OVER,
+        alpha: BlendComponent::OVER,
+    };
+}
+
+fn map_blend_factor(factor: BlendFactor) -> vk::BlendFactor {
+    match factor {
+        BlendFactor::Zero => vk::BlendFactor::ZERO,
+        BlendFactor::One => vk::BlendFactor::ONE,
+        BlendFactor::Src => vk::BlendFactor::SRC_COLOR,
+        BlendFactor::OneMinusSrc => vk::BlendFactor::ONE_MINUS_SRC_COLOR,
+        BlendFactor::SrcAlpha => vk::BlendFactor::SRC_ALPHA,
+        BlendFactor::OneMinusSrcAlpha => vk::BlendFactor::ONE_MINUS_SRC_ALPHA,
+        BlendFactor::Dst => vk::BlendFactor::DST_COLOR,
+        BlendFactor::OneMinusDst => vk::BlendFactor::ONE_MINUS_DST_COLOR,
+        BlendFactor::DstAlpha => vk::BlendFactor::DST_ALPHA,
+        BlendFactor::OneMinusDstAlpha => vk::BlendFactor::ONE_MINUS_DST_ALPHA,
+        BlendFactor::SrcAlphaSaturated => vk::BlendFactor::SRC_ALPHA_SATURATE,
+        BlendFactor::Constant => vk::BlendFactor::CONSTANT_COLOR,
+        BlendFactor::OneMinusConstant => vk::BlendFactor::ONE_MINUS_CONSTANT_COLOR,
+    }
+}
+
+fn map_blend_op(operation: BlendOperation) -> vk::BlendOp {
+    match operation {
+        BlendOperation::Add => vk::BlendOp::ADD,
+        BlendOperation::Subtract => vk::BlendOp::SUBTRACT,
+        BlendOperation::ReverseSubtract => vk::BlendOp::REVERSE_SUBTRACT,
+        BlendOperation::Min => vk::BlendOp::MIN,
+        BlendOperation::Max => vk::BlendOp::MAX,
+    }
+}
+
+pub fn map_blend_component(
+    component: &BlendComponent,
+) -> (vk::BlendOp, vk::BlendFactor, vk::BlendFactor) {
+    let op = map_blend_op(component.operation);
+    let src = map_blend_factor(component.src_factor);
+    let dst = map_blend_factor(component.dst_factor);
+    (op, src, dst)
+}
+
 pub struct GraphicsPipelineDescriptor<'a> {
     pub vertex_shader: Shader,
     pub fragment_shader: Shader,
@@ -305,6 +474,8 @@ pub struct GraphicsPipelineDescriptor<'a> {
     pub primitive: PrimitiveState,
     pub depth_stencil: Option<DepthStencilState>,
     pub push_constant_range: Option<vk::PushConstantRange>,
+    /// Blend state for each color attachment
+    pub blend: Vec<BlendState>,
 }
 
 impl serde::ser::Serialize for GraphicsPipelineDescriptor<'_> {
@@ -346,18 +517,34 @@ impl GraphicsPipeline {
                 ..Default::default()
             };
 
-        let color_blend_attachment_states = [vk::PipelineColorBlendAttachmentState {
-            blend_enable: 0,
-            src_color_blend_factor: vk::BlendFactor::SRC_COLOR,
-            dst_color_blend_factor: vk::BlendFactor::ONE_MINUS_DST_COLOR,
-            color_blend_op: vk::BlendOp::ADD,
-            src_alpha_blend_factor: vk::BlendFactor::ZERO,
-            dst_alpha_blend_factor: vk::BlendFactor::ZERO,
-            alpha_blend_op: vk::BlendOp::ADD,
-            color_write_mask: vk::ColorComponentFlags::RGBA,
-        }];
+        let mut color_blend_attachment_states =
+            Vec::with_capacity(desc.color_attachment_formats.len());
+        for _ in desc.color_attachment_formats {
+            color_blend_attachment_states.push(
+                vk::PipelineColorBlendAttachmentState::default()
+                    .color_write_mask(vk::ColorComponentFlags::RGBA),
+            );
+        }
+
+        for (index, blend) in desc.blend.iter().enumerate() {
+            let (color_op, color_src, color_dst) = map_blend_component(&blend.color);
+            let (alpha_op, alpha_src, alpha_dst) = map_blend_component(&blend.alpha);
+            color_blend_attachment_states[index] = vk::PipelineColorBlendAttachmentState::default()
+                .color_write_mask(vk::ColorComponentFlags::RGBA)
+                .blend_enable(true)
+                .color_blend_op(color_op)
+                .src_color_blend_factor(color_src)
+                .dst_color_blend_factor(color_dst)
+                .alpha_blend_op(alpha_op)
+                .src_alpha_blend_factor(alpha_src)
+                .dst_alpha_blend_factor(alpha_dst);
+        }
+        assert!(
+            color_blend_attachment_states.len() == desc.color_attachment_formats.len(),
+            "Each color attachment must have a blend state if writing to BlendState"
+        );
+
         let color_blend_state = vk::PipelineColorBlendStateCreateInfo::default()
-            .logic_op(vk::LogicOp::CLEAR)
             .attachments(&color_blend_attachment_states);
 
         let dynamic_state = [
