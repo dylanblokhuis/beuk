@@ -9,7 +9,7 @@ use ash::{
         khr::{DynamicRendering, Surface, Swapchain},
     },
     vk::{
-        CommandBuffer, DeviceCreateInfo, ExtDescriptorIndexingFn, KhrSamplerYcbcrConversionFn,
+        CommandBuffer, ExtDescriptorIndexingFn, KhrSamplerYcbcrConversionFn,
         PhysicalDeviceBufferDeviceAddressFeaturesKHR, PhysicalDeviceDescriptorIndexingFeatures,
         PhysicalDeviceSamplerYcbcrConversionFeatures, PresentModeKHR, SurfaceKHR, API_VERSION_1_2,
     },
@@ -81,6 +81,7 @@ pub struct SamplerDesc {
 pub struct RenderSwapchain {
     pub swapchain: vk::SwapchainKHR,
     pub swapchain_loader: Swapchain,
+    pub present_mode: vk::PresentModeKHR,
     pub present_images: Vec<vk::Image>,
     pub present_image_views: Vec<vk::ImageView>,
     pub depth_image: vk::Image,
@@ -129,12 +130,15 @@ pub struct RenderContext {
     pub setup_commands_reuse_fence: vk::Fence,
 }
 
+#[derive(Clone, Copy)]
+pub struct RenderContextDescriptor {
+    pub display_handle: raw_window_handle::RawDisplayHandle,
+    pub window_handle: raw_window_handle::RawWindowHandle,
+    pub present_mode: PresentModeKHR,
+}
+
 impl RenderContext {
-    pub fn new(
-        display_handle: raw_window_handle::RawDisplayHandle,
-        window_handle: raw_window_handle::RawWindowHandle,
-        customize_device_create_info: impl Fn(DeviceCreateInfo) -> DeviceCreateInfo,
-    ) -> Self {
+    pub fn new(desc: RenderContextDescriptor) -> Self {
         unsafe {
             let entry = Entry::linked();
             let app_name = CStr::from_bytes_with_nul_unchecked(b"beuk\0");
@@ -152,9 +156,10 @@ impl RenderContext {
                 .map(|raw_name| raw_name.as_ptr())
                 .collect();
 
-            let mut extension_names = ash_window::enumerate_required_extensions(display_handle)
-                .unwrap()
-                .to_vec();
+            let mut extension_names =
+                ash_window::enumerate_required_extensions(desc.display_handle)
+                    .unwrap()
+                    .to_vec();
             extension_names.push(DebugUtils::NAME.as_ptr());
             #[cfg(any(target_os = "macos", target_os = "ios"))]
             {
@@ -203,9 +208,14 @@ impl RenderContext {
             let debug_call_back = debug_utils_loader
                 .create_debug_utils_messenger(&debug_info, None)
                 .unwrap();
-            let surface =
-                ash_window::create_surface(&entry, &instance, display_handle, window_handle, None)
-                    .unwrap();
+            let surface = ash_window::create_surface(
+                &entry,
+                &instance,
+                desc.display_handle,
+                desc.window_handle,
+                None,
+            )
+            .unwrap();
             let pdevices = instance
                 .enumerate_physical_devices()
                 .expect("Physical device error");
@@ -292,7 +302,6 @@ impl RenderContext {
                 .push_next(&mut indexing_features)
                 .push_next(&mut yuv_features);
 
-            let device_create_info = customize_device_create_info(device_create_info);
             let device: Device = instance
                 .create_device(pdevice, &device_create_info, None)
                 .unwrap();
@@ -322,7 +331,7 @@ impl RenderContext {
                 pdevice,
                 &surface_loader,
                 surface,
-                PresentModeKHR::FIFO,
+                desc.present_mode,
             );
 
             let fence_create_info =
@@ -555,6 +564,7 @@ impl RenderContext {
                 depth_image_format: depth_image_create_info.format,
                 surface_format,
                 surface_resolution,
+                present_mode,
             }
         }
     }
@@ -590,7 +600,7 @@ impl RenderContext {
             self.pdevice,
             &self.surface_loader,
             self.surface,
-            PresentModeKHR::FIFO,
+            self.render_swapchain.present_mode,
         );
         self.render_swapchain = render_swapchain;
         self.pipeline_manager

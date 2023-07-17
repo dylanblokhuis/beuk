@@ -1,4 +1,5 @@
 use beuk::ash::vk::{self, BufferUsageFlags, PipelineVertexInputStateCreateInfo};
+use beuk::ctx::RenderContextDescriptor;
 use beuk::pipeline::BlendState;
 use beuk::{
     ctx::RenderContext,
@@ -22,25 +23,11 @@ fn main() {
         .build(&event_loop)
         .unwrap();
 
-    let mut ctx = beuk::ctx::RenderContext::new(
-        window.raw_display_handle(),
-        window.raw_window_handle(),
-        |dc| {
-            // example of enabling an extension
-            // let names = unsafe {
-            //     std::slice::from_raw_parts_mut(
-            //         dc.pp_enabled_extension_names.cast_mut(),
-            //         dc.enabled_extension_count as usize,
-            //     )
-            // };
-            // names[dc.enabled_extension_count as usize - 1] =
-            //     ash::vk::KhrSamplerYcbcrConversionFn::NAME.as_ptr();
-
-            // dc.enabled_extension_names(&*names)
-
-            dc
-        },
-    );
+    let mut ctx = beuk::ctx::RenderContext::new(RenderContextDescriptor {
+        display_handle: window.raw_display_handle(),
+        window_handle: window.raw_window_handle(),
+        present_mode: vk::PresentModeKHR::default(),
+    });
 
     let canvas = Canvas::new(&mut ctx);
 
@@ -49,6 +36,7 @@ fn main() {
             event: WindowEvent::CloseRequested,
             window_id,
         } if window_id == window.id() => control_flow.set_exit(),
+
         Event::MainEventsCleared => {
             window.request_redraw();
         }
