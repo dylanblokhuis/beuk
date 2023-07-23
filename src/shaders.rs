@@ -247,20 +247,24 @@ impl Shader {
 
                     match binding.ty {
                         rspirv_reflect::DescriptorType::COMBINED_IMAGE_SAMPLER => {
-                            bindings.push(
-                                vk::DescriptorSetLayoutBinding::default()
-                                    .binding(*binding_index)
-                                    .descriptor_count(descriptor_count) // TODO
-                                    .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-                                    .stage_flags(stage_flags)
-                                    .immutable_samplers(
-                                        if binding.name.contains("LinearYUV420P") {
-                                            yuv_samplers
-                                        } else {
-                                            &[]
-                                        },
-                                    ),
-                            )
+                            if binding.name.contains("LinearYUV420P") {
+                                bindings.push(
+                                    vk::DescriptorSetLayoutBinding::default()
+                                        .binding(*binding_index)
+                                        .descriptor_count(descriptor_count) // TODO
+                                        .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+                                        .stage_flags(stage_flags)
+                                        .immutable_samplers(yuv_samplers),
+                                );
+                            } else {
+                                bindings.push(
+                                    vk::DescriptorSetLayoutBinding::default()
+                                        .binding(*binding_index)
+                                        .descriptor_count(descriptor_count) // TODO
+                                        .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+                                        .stage_flags(stage_flags),
+                                );
+                            }
                         }
                         rspirv_reflect::DescriptorType::UNIFORM_BUFFER
                         | rspirv_reflect::DescriptorType::UNIFORM_TEXEL_BUFFER
