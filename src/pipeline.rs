@@ -593,6 +593,8 @@ impl GraphicsPipeline {
             .fragment_shader
             .create_descriptor_set_layouts(device, shader_info);
 
+        dbg!(descriptor_set_layouts.clone(), set_layout_info.clone());
+
         let pipeline_layout = unsafe {
             device
                 .create_pipeline_layout(
