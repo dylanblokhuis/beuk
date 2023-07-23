@@ -140,6 +140,7 @@ impl Canvas {
                     depth_stencil: Default::default(),
                     push_constant_range: None,
                     blend: vec![BlendState::ALPHA_BLENDING],
+                    multisample: beuk::pipeline::MultisampleState::default(),
                 });
         Self {
             pipeline_handle,

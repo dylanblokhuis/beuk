@@ -464,6 +464,34 @@ pub fn map_blend_component(
     (op, src, dst)
 }
 
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct MultisampleState {
+    /// The number of samples calculated per pixel (for MSAA). For non-multisampled textures,
+    /// this should be `1`
+    pub count: u32,
+    /// Bitmask that restricts the samples of a pixel modified by this pipeline. All samples
+    /// can be enabled using the value `!0`
+    pub mask: u64,
+    /// When enabled, produces another sample mask per pixel based on the alpha output value, that
+    /// is ANDed with the sample_mask and the primitive coverage to restrict the set of samples
+    /// affected by a primitive.
+    ///
+    /// The implicit mask produced for alpha of zero is guaranteed to be zero, and for alpha of one
+    /// is guaranteed to be all 1-s.
+    pub alpha_to_coverage_enabled: bool,
+}
+
+impl Default for MultisampleState {
+    fn default() -> Self {
+        MultisampleState {
+            count: 1,
+            mask: !0,
+            alpha_to_coverage_enabled: false,
+        }
+    }
+}
+
 pub struct GraphicsPipelineDescriptor<'a> {
     pub vertex_shader: Shader,
     pub fragment_shader: Shader,
@@ -476,6 +504,7 @@ pub struct GraphicsPipelineDescriptor<'a> {
     pub push_constant_range: Option<vk::PushConstantRange>,
     /// Blend state for each color attachment
     pub blend: Vec<BlendState>,
+    pub multisample: MultisampleState,
 }
 
 impl serde::ser::Serialize for GraphicsPipelineDescriptor<'_> {
@@ -511,11 +540,15 @@ impl GraphicsPipeline {
         desc: GraphicsPipelineDescriptor,
         shader_info: &mut ImmutableShaderInfo,
     ) -> Self {
+        let vk_sample_mask = [
+            desc.multisample.mask as u32,
+            (desc.multisample.mask >> 32) as u32,
+        ];
         let multisample_state_info: vk::PipelineMultisampleStateCreateInfo<'_> =
-            vk::PipelineMultisampleStateCreateInfo {
-                rasterization_samples: vk::SampleCountFlags::TYPE_1,
-                ..Default::default()
-            };
+            vk::PipelineMultisampleStateCreateInfo::default()
+                .rasterization_samples(vk::SampleCountFlags::from_raw(desc.multisample.count))
+                .alpha_to_coverage_enable(desc.multisample.alpha_to_coverage_enabled)
+                .sample_mask(&vk_sample_mask);
 
         let mut color_blend_attachment_states =
             Vec::with_capacity(desc.color_attachment_formats.len());
@@ -661,7 +694,6 @@ impl GraphicsPipeline {
             .depth_stencil_state(&depth_stencil)
             .dynamic_state(&dynamic_state_info)
             .layout(pipeline_layout)
-            // todo
             .multisample_state(&multisample_state_info)
             .color_blend_state(&color_blend_state)
             .push_next(&mut rendering_info);
