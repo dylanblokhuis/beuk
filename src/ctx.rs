@@ -934,6 +934,33 @@ impl RenderContext {
             self.setup_command_buffer,
             self.setup_commands_reuse_fence,
             |ctx, command_buffer| unsafe {
+                {
+                    let image_memory_barrier = vk::ImageMemoryBarrier::default()
+                        .src_access_mask(vk::AccessFlags::empty())
+                        .dst_access_mask(vk::AccessFlags::TRANSFER_WRITE)
+                        .old_layout(vk::ImageLayout::UNDEFINED)
+                        .new_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
+                        .image(texture.image)
+                        .subresource_range(
+                            vk::ImageSubresourceRange::default()
+                                .aspect_mask(vk::ImageAspectFlags::COLOR)
+                                .base_mip_level(0)
+                                .level_count(1)
+                                .base_array_layer(0)
+                                .layer_count(1),
+                        );
+
+                    self.device.cmd_pipeline_barrier(
+                        command_buffer,
+                        vk::PipelineStageFlags::TRANSFER,
+                        vk::PipelineStageFlags::TRANSFER,
+                        vk::DependencyFlags::empty(),
+                        &[],
+                        &[],
+                        &[image_memory_barrier],
+                    );
+                }
+
                 ctx.device.cmd_copy_buffer_to_image(
                     command_buffer,
                     buffer.buffer,

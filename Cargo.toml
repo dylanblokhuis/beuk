@@ -20,3 +20,4 @@ shaderc = "0.8.2"
 [dev-dependencies]
 winit = "0.28"
 bytemuck = { version = "1.13", features = ["derive"] }
+image = { version = "0.24", features = ["jpeg", "png"] }

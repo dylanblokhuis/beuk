@@ -1,5 +1,6 @@
 use beuk::ash::vk::{self, BufferUsageFlags, PipelineVertexInputStateCreateInfo};
-use beuk::ctx::RenderContextDescriptor;
+use beuk::ctx::{RenderContextDescriptor, SamplerDesc};
+use beuk::memory::MemoryLocation;
 use beuk::pipeline::BlendState;
 use beuk::{
     ctx::RenderContext,
@@ -7,6 +8,7 @@ use beuk::{
     pipeline::{GraphicsPipelineDescriptor, PrimitiveState},
     shaders::Shader,
 };
+use image::EncodableLayout;
 use raw_window_handle::{HasRawDisplayHandle, HasRawWindowHandle};
 use winit::{
     event::{Event, WindowEvent},
@@ -64,16 +66,16 @@ impl Canvas {
     fn new(ctx: &mut RenderContext) -> Self {
         let vertex_shader = Shader::from_source_text(
             &ctx.device,
-            include_str!("./triangle/shader.vert"),
-            "shader.vert",
+            include_str!("./texture/shader.vert"),
+            "triangle.vert",
             beuk::shaders::ShaderKind::Vertex,
             "main",
         );
 
         let fragment_shader = Shader::from_source_text(
             &ctx.device,
-            include_str!("./triangle/shader.frag"),
-            "shader.frag",
+            include_str!("./texture/shader.frag"),
+            "triangle.frag",
             beuk::shaders::ShaderKind::Fragment,
             "main",
         );
@@ -142,6 +144,63 @@ impl Canvas {
                     blend: vec![BlendState::ALPHA_BLENDING],
                     multisample: beuk::pipeline::MultisampleState::default(),
                 });
+
+        let wallpaper_bytes = include_bytes!("./texture/95.jpg");
+        let image = image::load_from_memory(wallpaper_bytes).unwrap();
+        let handle = ctx.texture_manager.create_texture(
+            "fonts",
+            &vk::ImageCreateInfo {
+                image_type: vk::ImageType::TYPE_2D,
+                format: vk::Format::R8G8B8A8_SRGB,
+                extent: vk::Extent3D {
+                    width: image.width() as u32,
+                    height: image.height() as u32,
+                    depth: 1,
+                },
+                usage: vk::ImageUsageFlags::TRANSFER_DST | vk::ImageUsageFlags::SAMPLED,
+                mip_levels: 1,
+                array_layers: 1,
+                samples: vk::SampleCountFlags::TYPE_1,
+                sharing_mode: vk::SharingMode::EXCLUSIVE,
+                ..Default::default()
+            },
+        );
+
+        let buffer = ctx.buffer_manager.create_buffer_with_data(
+            "fonts",
+            bytemuck::cast_slice(image.to_rgba8().as_bytes()),
+            vk::BufferUsageFlags::TRANSFER_SRC,
+            MemoryLocation::CpuToGpu,
+        );
+        let buffer = ctx.buffer_manager.get_buffer(buffer);
+        let texture = ctx.texture_manager.get_texture(handle);
+        ctx.copy_buffer_to_texture(buffer, texture);
+        let texture = ctx.texture_manager.get_texture_mut(handle);
+        let view = texture.create_view(&ctx.device);
+
+        unsafe {
+            let pipeline = ctx.pipeline_manager.get_graphics_pipeline(&pipeline_handle);
+            ctx.device.update_descriptor_sets(
+                &[vk::WriteDescriptorSet::default()
+                    .dst_set(pipeline.descriptor_sets[0])
+                    .dst_binding(0)
+                    .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+                    .image_info(std::slice::from_ref(
+                        &vk::DescriptorImageInfo::default()
+                            .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
+                            .image_view(view)
+                            .sampler(ctx.pipeline_manager.immutable_shader_info.get_sampler(
+                                &SamplerDesc {
+                                    address_modes: vk::SamplerAddressMode::REPEAT,
+                                    mipmap_mode: vk::SamplerMipmapMode::LINEAR,
+                                    texel_filter: vk::Filter::LINEAR,
+                                },
+                            )),
+                    ))],
+                &[],
+            );
+        }
+
         Self {
             pipeline_handle,
             vertex_buffer,
