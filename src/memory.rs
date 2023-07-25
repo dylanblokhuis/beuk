@@ -1,4 +1,4 @@
-use ash::vk::{self, SamplerAddressMode};
+use ash::vk::{self};
 use std::{
     collections::{BTreeMap, HashMap},
     mem::size_of_val,
@@ -124,22 +124,22 @@ impl TextureManager {
         &mut self,
         debug_name: &str,
         image_info: &vk::ImageCreateInfo,
-    ) -> (TextureHandle, &Texture) {
+    ) -> TextureHandle {
         let buffer = Texture::new(&self.device, &mut self.allocator, debug_name, image_info);
         let handle = TextureHandle(self.textures.len());
         self.textures.insert(handle, buffer);
-        (handle, self.textures.get(&handle).unwrap())
+        handle
     }
 
-    pub fn get_buffer(&self, handle: TextureHandle) -> &Texture {
+    pub fn get_texture(&self, handle: TextureHandle) -> &Texture {
         self.textures.get(&handle).unwrap()
     }
 
-    pub fn get_buffer_mut(&mut self, handle: TextureHandle) -> &mut Texture {
+    pub fn get_texture_mut(&mut self, handle: TextureHandle) -> &mut Texture {
         self.textures.get_mut(&handle).unwrap()
     }
 
-    pub fn remove_buffer(&mut self, handle: TextureHandle) {
+    pub fn remove_texture(&mut self, handle: TextureHandle) {
         {
             let buffer = self.textures.get_mut(&handle).unwrap();
 

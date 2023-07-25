@@ -24,7 +24,11 @@ use std::{cell::RefCell, default::Default};
 use std::{ops::Drop, sync::RwLock};
 use std::{os::raw::c_char, sync::Arc};
 
-use crate::memory::{BufferManager, PipelineManager, TextureManager};
+use crate::{
+    buffer::Buffer,
+    memory::{BufferManager, PipelineManager, TextureManager},
+    texture::Texture,
+};
 
 pub const RESERVED_DESCRIPTOR_COUNT: u32 = 32;
 
@@ -610,19 +614,17 @@ impl RenderContext {
     pub fn record<F: FnOnce(&Self, vk::CommandBuffer)>(
         &self,
         command_buffer: vk::CommandBuffer,
-        fence: Option<vk::Fence>,
+        fence: vk::Fence,
         f: F,
     ) {
         unsafe {
-            if let Some(fence) = fence {
-                self.device
-                    .wait_for_fences(&[fence], true, std::u64::MAX)
-                    .expect("Wait for fence failed.");
+            self.device
+                .wait_for_fences(&[fence], true, std::u64::MAX)
+                .expect("Wait for fence failed.");
 
-                self.device
-                    .reset_fences(&[fence])
-                    .expect("Reset fences failed.");
-            }
+            self.device
+                .reset_fences(&[fence])
+                .expect("Reset fences failed.");
 
             self.device
                 .reset_command_buffer(
@@ -644,7 +646,7 @@ impl RenderContext {
         }
     }
 
-    /// Submits the command buffer to the present queue and waits for it to finish.
+    /// Submits the command buffer to the queue and waits for it to finish.
     pub fn submit(&self, command_buffer: &vk::CommandBuffer, fence: vk::Fence) {
         let submit_info =
             vk::SubmitInfo::default().command_buffers(std::slice::from_ref(command_buffer));
@@ -723,7 +725,7 @@ impl RenderContext {
     ) {
         self.record(
             self.draw_command_buffer,
-            Some(self.draw_commands_reuse_fence),
+            self.draw_commands_reuse_fence,
             |ctx, command_buffer| unsafe {
                 let layout_transition_barriers = vk::ImageMemoryBarrier::default()
                     .image(self.render_swapchain.present_images[present_index as usize])
@@ -925,6 +927,33 @@ impl RenderContext {
             .unwrap();
 
         (pool, m_command_buffers_clone)
+    }
+
+    pub fn copy_buffer_to_texture(&self, buffer: &Buffer, texture: &Texture) {
+        self.record(
+            self.setup_command_buffer,
+            self.setup_commands_reuse_fence,
+            |ctx, command_buffer| unsafe {
+                ctx.device.cmd_copy_buffer_to_image(
+                    command_buffer,
+                    buffer.buffer,
+                    texture.image,
+                    vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+                    &[vk::BufferImageCopy::default()
+                        .buffer_offset(0)
+                        .buffer_row_length(texture.extent.width)
+                        .buffer_image_height(0)
+                        .image_subresource(vk::ImageSubresourceLayers {
+                            aspect_mask: vk::ImageAspectFlags::COLOR,
+                            mip_level: 0,
+                            base_array_layer: 0,
+                            layer_count: 1,
+                        })
+                        .image_extent(texture.extent)],
+                );
+            },
+        );
+        self.submit(&self.setup_command_buffer, self.setup_commands_reuse_fence);
     }
 
     // pub fn copy_buffer_to_texture(&self, buffer: &Buffer, texture: &Image) {
