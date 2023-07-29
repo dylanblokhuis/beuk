@@ -25,13 +25,9 @@ use std::{cell::RefCell, default::Default};
 use std::{ops::Drop, sync::RwLock};
 use std::{os::raw::c_char, sync::Arc};
 
-use crate::{
-    buffer::Buffer,
-    memory::{
-        BufferDescriptor, BufferHandle, BufferManager, MemoryLocation, PipelineManager,
-        TextureManager,
-    },
-    texture::Texture,
+use crate::memory::{
+    BufferDescriptor, BufferHandle, BufferManager, MemoryLocation, PipelineManager, TextureHandle,
+    TextureManager,
 };
 
 pub const RESERVED_DESCRIPTOR_COUNT: u32 = 32;
@@ -123,7 +119,7 @@ pub struct RenderContext {
     pub command_thread_pool: ThreadPool,
     pub threaded_command_buffers: Arc<RwLock<HashMap<usize, CommandBuffer>>>,
     pub buffer_manager: Arc<RwLock<BufferManager>>,
-    pub texture_manager: TextureManager,
+    pub texture_manager: Arc<RwLock<TextureManager>>,
     pub pipeline_manager: PipelineManager,
 
     pub pdevice: vk::PhysicalDevice,
@@ -414,7 +410,7 @@ impl RenderContext {
                 threaded_command_buffers,
                 render_swapchain,
                 buffer_manager: Arc::new(RwLock::new(buffer_manager)),
-                texture_manager,
+                texture_manager: Arc::new(RwLock::new(texture_manager)),
                 pipeline_manager,
                 // TODO: fetch from device
                 max_descriptor_count: {
@@ -954,11 +950,13 @@ impl RenderContext {
         (pool, m_command_buffers_clone)
     }
 
-    pub fn copy_buffer_to_texture(&self, buffer: &Buffer, texture: &Texture) {
+    pub fn copy_buffer_to_texture(&self, buffer: &BufferHandle, texture: &TextureHandle) {
         self.record(
             self.setup_command_buffer,
             self.setup_commands_reuse_fence,
             |ctx, command_buffer| unsafe {
+                let texture_manager = ctx.get_texture_manager();
+                let texture = texture_manager.get(texture.id());
                 {
                     let image_memory_barrier = vk::ImageMemoryBarrier::default()
                         .src_access_mask(vk::AccessFlags::empty())
@@ -988,7 +986,7 @@ impl RenderContext {
 
                 ctx.device.cmd_copy_buffer_to_image(
                     command_buffer,
-                    buffer.buffer,
+                    ctx.get_buffer_manager().get(buffer.id()).buffer,
                     texture.image,
                     vk::ImageLayout::TRANSFER_DST_OPTIMAL,
                     &[vk::BufferImageCopy::default()
@@ -1085,6 +1083,16 @@ impl RenderContext {
         self.buffer_manager.write().unwrap()
     }
 
+    /// Returns a read lock to the buffer manager.
+    pub fn get_texture_manager(&self) -> std::sync::RwLockReadGuard<TextureManager> {
+        self.texture_manager.read().unwrap()
+    }
+
+    /// Returns a write lock to the buffer manager.
+    pub fn get_texture_manager_mut(&self) -> std::sync::RwLockWriteGuard<TextureManager> {
+        self.texture_manager.write().unwrap()
+    }
+
     pub fn create_buffer(&self, desc: &BufferDescriptor) -> BufferHandle {
         let mut manager = self.buffer_manager.write().unwrap();
         let id = manager.create_buffer(desc);
@@ -1102,6 +1110,9 @@ impl RenderContext {
         let mut desc = desc.clone();
         if desc.location == MemoryLocation::GpuOnly {
             desc.usage |= vk::BufferUsageFlags::TRANSFER_DST;
+        }
+        if desc.size == 0 {
+            desc.size = (data.len() - offset) as u64;
         }
         let id = self.get_buffer_manager_mut().create_buffer(&desc);
         let mut handle = BufferHandle::new(id, self.buffer_manager.clone());
@@ -1145,6 +1156,24 @@ impl RenderContext {
 
         handle.clone()
     }
+
+    pub fn create_texture(
+        &self,
+        debug_name: &str,
+        create_info: &vk::ImageCreateInfo,
+    ) -> TextureHandle {
+        let mut manager = self.texture_manager.write().unwrap();
+        let id = manager.create_texture(debug_name, create_info);
+        drop(manager);
+
+        TextureHandle::new(id, self.texture_manager.clone())
+    }
+
+    pub fn get_texture_view(&self, texture: &TextureHandle) -> Arc<vk::ImageView> {
+        let mut manager = self.texture_manager.write().unwrap();
+        let texture = manager.get_mut(texture.id());
+        texture.create_view(&self.device)
+    }
 }
 
 impl Drop for RenderContext {
@@ -1152,6 +1181,7 @@ impl Drop for RenderContext {
         unsafe {
             self.device.device_wait_idle().unwrap();
 
+            log::debug!("Dropping semaphores and fences");
             self.device
                 .destroy_semaphore(self.present_complete_semaphore, None);
             self.device
@@ -1161,25 +1191,29 @@ impl Drop for RenderContext {
             self.device
                 .destroy_fence(self.setup_commands_reuse_fence, None);
 
+            log::debug!("Dropping swapchain");
             self.cleanup_swapchain();
 
-            // cleanup command buffers and pools
-            {
-                self.command_thread_pool.broadcast(|ctx| {
-                    COMMAND_POOL.with(|pool| {
-                        let pool = pool.take();
-                        let mut command_buffer_g = self.threaded_command_buffers.write().unwrap();
-                        let command_buffer = command_buffer_g.get(&ctx.index());
-                        if let Some(command_buffer) = command_buffer {
-                            self.device.free_command_buffers(pool, &[*command_buffer]);
-                        }
-                        self.device.destroy_command_pool(pool, None);
-                        command_buffer_g.remove(&ctx.index());
-                    });
+            log::debug!("Dropping command pools");
+            self.command_thread_pool.broadcast(|ctx| {
+                COMMAND_POOL.with(|pool| {
+                    let pool = pool.take();
+                    let mut command_buffer_g = self.threaded_command_buffers.write().unwrap();
+                    let command_buffer = command_buffer_g.get(&ctx.index());
+                    if let Some(command_buffer) = command_buffer {
+                        self.device.free_command_buffers(pool, &[*command_buffer]);
+                    }
+                    self.device.destroy_command_pool(pool, None);
+                    command_buffer_g.remove(&ctx.index());
                 });
-            }
+            });
+
+            log::debug!("Dropping pipeline manager");
             self.pipeline_manager.clear();
+            log::debug!("Dropping buffer manager");
             self.buffer_manager.write().unwrap().clear();
+            log::debug!("Dropping texture manager");
+            self.texture_manager.write().unwrap().clear();
 
             self.device.destroy_command_pool(self.pool, None);
             self.device.destroy_device(None);

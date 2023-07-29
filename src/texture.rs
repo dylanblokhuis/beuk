@@ -3,12 +3,13 @@ use gpu_allocator::{
     vulkan::{Allocation, AllocationCreateDesc, Allocator},
     MemoryLocation,
 };
+use std::sync::Arc;
 
 #[derive(Debug)]
 pub struct Texture {
     pub image: vk::Image,
     pub allocation: Option<Allocation>,
-    pub view: Option<vk::ImageView>,
+    pub view: Option<Arc<vk::ImageView>>,
     pub format: vk::Format,
     pub extent: vk::Extent3D,
     pub offset: u64,
@@ -51,9 +52,9 @@ impl Texture {
         }
     }
 
-    pub fn create_view(&mut self, device: &ash::Device) -> vk::ImageView {
+    pub fn create_view(&mut self, device: &ash::Device) -> Arc<vk::ImageView> {
         if self.view.is_some() {
-            return self.view.unwrap();
+            return self.view.clone().unwrap();
         }
         let view = unsafe {
             device.create_image_view(
@@ -79,13 +80,14 @@ impl Texture {
             )
         }
         .unwrap();
-        self.view = Some(view);
+        let view = Arc::new(view);
+        self.view = Some(view.clone());
         view
     }
 
     pub fn destroy(&mut self, device: &ash::Device, allocator: &mut Allocator) {
         if let Some(view) = self.view.take() {
-            unsafe { device.destroy_image_view(view, None) };
+            unsafe { device.destroy_image_view(*view, None) };
         }
         allocator.free(self.allocation.take().unwrap()).unwrap();
         unsafe { device.destroy_image(self.image, None) };

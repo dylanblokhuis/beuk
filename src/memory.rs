@@ -1,7 +1,8 @@
 use ash::vk::{self};
 use std::{
-    collections::{BTreeMap, HashMap},
+    collections::HashMap,
     fmt::Debug,
+    hash::Hash,
     sync::{Arc, RwLock},
 };
 
@@ -91,6 +92,17 @@ pub struct BufferDescriptor {
     pub location: MemoryLocation,
 }
 
+impl Default for BufferDescriptor {
+    fn default() -> Self {
+        Self {
+            debug_name: "unnamed",
+            size: 0,
+            usage: vk::BufferUsageFlags::empty(),
+            location: MemoryLocation::CpuToGpu,
+        }
+    }
+}
+
 impl BufferManager {
     pub fn new(device: ash::Device, allocator: gpu_allocator::vulkan::Allocator) -> Self {
         Self {
@@ -166,6 +178,7 @@ impl Drop for BufferManager {
     }
 }
 
+#[derive(Debug)]
 pub struct TextureHandle {
     id: TextureId,
     manager: Arc<RwLock<TextureManager>>,
@@ -175,21 +188,48 @@ impl TextureHandle {
     pub fn new(id: TextureId, manager: Arc<RwLock<TextureManager>>) -> Self {
         Self { id, manager }
     }
+
+    #[inline]
+    pub fn id(&self) -> TextureId {
+        self.id
+    }
+}
+
+impl Clone for TextureHandle {
+    #[tracing::instrument]
+    fn clone(&self) -> Self {
+        self.manager.write().unwrap().retain(self.id);
+        Self {
+            id: self.id,
+            manager: self.manager.clone(),
+        }
+    }
 }
 
 impl Drop for TextureHandle {
     fn drop(&mut self) {
-        self.manager.write().unwrap().remove_texture(self.id);
+        self.manager.write().unwrap().remove(self.id);
     }
 }
 
-#[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord)]
-pub struct TextureId(usize);
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
+pub struct TextureId(u64);
 
 pub struct TextureManager {
     device: ash::Device,
     allocator: gpu_allocator::vulkan::Allocator,
-    textures: BTreeMap<TextureId, Texture>,
+    textures: HashMap<TextureId, Texture>,
+    counters: HashMap<TextureId, usize>,
+    next_id: u64,
+}
+
+impl Debug for TextureManager {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TextureManager")
+            .field("textures", &self.textures)
+            .field("counters", &self.counters)
+            .finish()
+    }
 }
 
 impl TextureManager {
@@ -197,7 +237,9 @@ impl TextureManager {
         Self {
             device,
             allocator,
-            textures: BTreeMap::new(),
+            textures: HashMap::new(),
+            counters: HashMap::new(),
+            next_id: 0,
         }
     }
 
@@ -207,35 +249,59 @@ impl TextureManager {
         image_info: &vk::ImageCreateInfo,
     ) -> TextureId {
         let buffer = Texture::new(&self.device, &mut self.allocator, debug_name, image_info);
-        let handle = TextureId(self.textures.len());
-        self.textures.insert(handle, buffer);
-        handle
+        let id = TextureId(self.next_id);
+        self.next_id += 1;
+        self.textures.insert(id, buffer);
+        self.counters.insert(id, 1);
+        id
     }
 
-    pub fn get_texture(&self, handle: TextureId) -> &Texture {
+    pub fn get(&self, handle: TextureId) -> &Texture {
         self.textures.get(&handle).unwrap()
     }
 
-    pub fn get_texture_mut(&mut self, handle: TextureId) -> &mut Texture {
+    pub fn get_mut(&mut self, handle: TextureId) -> &mut Texture {
         self.textures.get_mut(&handle).unwrap()
     }
 
-    pub fn remove_texture(&mut self, handle: TextureId) {
-        {
-            let buffer = self.textures.get_mut(&handle).unwrap();
+    pub fn remove(&mut self, handle: TextureId) {
+        let counter = self.counters.get_mut(&handle).unwrap();
+        *counter -= 1;
+        println!("Destroying! {} {:?}", counter, handle);
+        if *counter > 0 {
+            return;
+        }
 
-            buffer.destroy(&self.device, &mut self.allocator);
+        {
+            let texture = self.textures.get_mut(&handle).unwrap();
+
+            texture.destroy(&self.device, &mut self.allocator);
         }
 
         self.textures.remove(&handle);
+    }
+
+    #[tracing::instrument]
+    pub fn retain(&mut self, handle: TextureId) {
+        let counter = self
+            .counters
+            .get_mut(&handle)
+            .expect("Tried to retain a buffer that doesn't exist");
+        *counter += 1;
+    }
+
+    pub fn clear(&mut self) {
+        for (_, texture) in self.textures.iter_mut() {
+            texture.destroy(&self.device, &mut self.allocator);
+        }
+        self.textures.clear();
+        self.counters.clear();
     }
 }
 
 impl Drop for TextureManager {
     fn drop(&mut self) {
-        for (_, texture) in self.textures.iter_mut() {
-            texture.destroy(&self.device, &mut self.allocator);
-        }
+        self.clear();
     }
 }
 
@@ -432,6 +498,10 @@ impl PipelineManager {
     pub fn clear(&mut self) {
         unsafe {
             for sampler in self.immutable_shader_info.immutable_samplers.values() {
+                self.device.destroy_sampler(*sampler, None);
+            }
+            for (conv, sampler) in self.immutable_shader_info.yuv_conversion_samplers.values() {
+                self.device.destroy_sampler_ycbcr_conversion(*conv, None);
                 self.device.destroy_sampler(*sampler, None);
             }
             for (_, pipeline) in self.graphics_pipelines.iter_mut() {

@@ -17,6 +17,7 @@ use winit::{
 };
 
 fn main() {
+    simple_logger::SimpleLogger::new().init().unwrap();
     let event_loop = EventLoop::new();
 
     let window = WindowBuilder::new()
@@ -63,7 +64,7 @@ struct Vertex {
 }
 
 impl Canvas {
-    fn new(ctx: &RenderContext) -> Self {
+    fn new(ctx: &mut RenderContext) -> Self {
         let vertex_shader = Shader::from_source_text(
             &ctx.device,
             include_str!("./texture/shader.vert"),
@@ -123,7 +124,7 @@ impl Canvas {
 
         let pipeline_handle =
             ctx.pipeline_manager
-                .create_graphics_pipeline(GraphicsPipelineDescriptor {
+                .create_graphics_pipeline(&GraphicsPipelineDescriptor {
                     vertex_shader,
                     fragment_shader,
                     vertex_input: PipelineVertexInputStateCreateInfo::default()
@@ -148,7 +149,7 @@ impl Canvas {
                         }]),
                     color_attachment_formats: &[ctx.render_swapchain.surface_format.format],
                     depth_attachment_format: ctx.render_swapchain.depth_image_format,
-                    viewport: ctx.render_swapchain.surface_resolution,
+                    viewport: None,
                     primitive: PrimitiveState {
                         topology: vk::PrimitiveTopology::TRIANGLE_LIST,
                         ..Default::default()
@@ -161,7 +162,7 @@ impl Canvas {
 
         let wallpaper_bytes = include_bytes!("./texture/95.jpg");
         let image = image::load_from_memory(wallpaper_bytes).unwrap();
-        let handle = ctx.texture_manager.create_texture(
+        let texture_handle = ctx.create_texture(
             "fonts",
             &vk::ImageCreateInfo {
                 image_type: vk::ImageType::TYPE_2D,
@@ -180,17 +181,18 @@ impl Canvas {
             },
         );
 
-        let buffer = ctx.buffer_manager.create_buffer_with_data(
-            "fonts",
+        let buffer_handle = ctx.create_buffer_with_data(
+            &BufferDescriptor {
+                debug_name: "fonts",
+                usage: vk::BufferUsageFlags::TRANSFER_SRC,
+                location: MemoryLocation::CpuToGpu,
+                ..Default::default()
+            },
             bytemuck::cast_slice(image.to_rgba8().as_bytes()),
-            vk::BufferUsageFlags::TRANSFER_SRC,
-            MemoryLocation::CpuToGpu,
+            0,
         );
-        let buffer = ctx.buffer_manager.get_buffer(buffer);
-        let texture = ctx.texture_manager.get_texture(handle);
-        ctx.copy_buffer_to_texture(buffer, texture);
-        let texture = ctx.texture_manager.get_texture_mut(handle);
-        let view = texture.create_view(&ctx.device);
+        ctx.copy_buffer_to_texture(&buffer_handle, &texture_handle);
+        let view = ctx.get_texture_view(&texture_handle);
 
         unsafe {
             let pipeline = ctx.pipeline_manager.get_graphics_pipeline(&pipeline_handle);
@@ -202,7 +204,7 @@ impl Canvas {
                     .image_info(std::slice::from_ref(
                         &vk::DescriptorImageInfo::default()
                             .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
-                            .image_view(view)
+                            .image_view(*view)
                             .sampler(ctx.pipeline_manager.immutable_shader_info.get_sampler(
                                 &SamplerDesc {
                                     address_modes: vk::SamplerAddressMode::REPEAT,
@@ -259,12 +261,12 @@ impl Canvas {
             ctx.device.cmd_bind_vertex_buffers(
                 command_buffer,
                 0,
-                std::slice::from_ref(&ctx.buffer_manager.get_buffer(self.vertex_buffer).buffer),
+                std::slice::from_ref(&ctx.get_buffer_manager().get(self.vertex_buffer.id()).buffer),
                 &[0],
             );
             ctx.device.cmd_bind_index_buffer(
                 command_buffer,
-                ctx.buffer_manager.get_buffer(self.index_buffer).buffer,
+                ctx.get_buffer_manager().get(self.index_buffer.id()).buffer,
                 0,
                 vk::IndexType::UINT32,
             );
