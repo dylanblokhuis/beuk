@@ -232,10 +232,7 @@ pub enum CompareFunction {
 impl CompareFunction {
     /// Returns true if the comparison depends on the reference value.
     pub fn needs_ref_value(self) -> bool {
-        match self {
-            Self::Never | Self::Always => false,
-            _ => true,
-        }
+        !matches!(self, Self::Never | Self::Always)
     }
 }
 
@@ -492,13 +489,15 @@ impl Default for MultisampleState {
     }
 }
 
+#[derive(Clone)]
 pub struct GraphicsPipelineDescriptor<'a> {
     pub vertex_shader: Shader,
     pub fragment_shader: Shader,
     pub vertex_input: vk::PipelineVertexInputStateCreateInfo<'a>,
     pub color_attachment_formats: &'a [vk::Format],
     pub depth_attachment_format: vk::Format,
-    pub viewport: vk::Extent2D,
+    /// Viewport dimensions. If `None`, the viewport will be the size of the swapchain.
+    pub viewport: Option<vk::Extent2D>,
     pub primitive: PrimitiveState,
     pub depth_stencil: Option<DepthStencilState>,
     pub push_constant_range: Option<vk::PushConstantRange>,
@@ -532,13 +531,16 @@ pub struct GraphicsPipeline {
     pub depth_attachment: vk::Format,
     pub viewports: Vec<vk::Viewport>,
     pub scissors: Vec<vk::Rect2D>,
+    pub vertex_shader: Shader,
+    pub fragment_shader: Shader,
 }
 
 impl GraphicsPipeline {
     pub fn new(
         device: &Device,
-        desc: GraphicsPipelineDescriptor,
+        desc: &GraphicsPipelineDescriptor,
         shader_info: &mut ImmutableShaderInfo,
+        swapchain_size: vk::Extent2D,
     ) -> Self {
         let vk_sample_mask = [
             desc.multisample.mask as u32,
@@ -667,16 +669,18 @@ impl GraphicsPipeline {
             .topology(desc.primitive.topology)
             .primitive_restart_enable(false);
 
+        let viewport = desc.viewport.unwrap_or(swapchain_size);
+
         let viewports = vec![vk::Viewport {
             x: 0.0,
             y: 0.0,
-            width: desc.viewport.width as f32,
-            height: desc.viewport.height as f32,
+            width: viewport.width as f32,
+            height: viewport.height as f32,
             min_depth: 0.0,
             max_depth: 1.0,
         }];
 
-        let scissors = vec![desc.viewport.into()];
+        let scissors = vec![viewport.into()];
         let viewport_state = vk::PipelineViewportStateCreateInfo::default()
             .scissors(&scissors)
             .viewports(&viewports);
@@ -729,6 +733,8 @@ impl GraphicsPipeline {
             depth_attachment: desc.depth_attachment_format,
             viewports,
             scissors,
+            vertex_shader: desc.vertex_shader.clone(),
+            fragment_shader: desc.fragment_shader.clone(),
         }
     }
 

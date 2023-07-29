@@ -88,7 +88,6 @@ impl Buffer {
         let Some(allocation) = self.allocation.as_ref() else {
             panic!("Tried writing to buffer but buffer not allocated");
         };
-        //assert!(std::mem::size_of_val(slice) + offset <= self.info.get_size());
 
         unsafe {
             let ptr = allocation.mapped_ptr().unwrap().as_ptr() as *mut u8;

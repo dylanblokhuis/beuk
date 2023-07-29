@@ -10,7 +10,7 @@ use shaderc::CompilationArtifact;
 
 use crate::{chunky_list::TempList, ctx::SamplerDesc, memory::ImmutableShaderInfo};
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct Shader {
     pub kind: ShaderKind,
     pub spirv_descripor_set_layouts: StageDescriptorSetLayouts,
@@ -20,7 +20,7 @@ pub struct Shader {
     pub spirv: Vec<u8>,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub enum ShaderKind {
     Vertex,
     Fragment,
@@ -86,8 +86,7 @@ impl Shader {
         let mut descriptor_pool_sizes: Vec<vk::DescriptorPoolSize> = Vec::new();
         for bindings in set_layout_info.iter() {
             for ty in bindings.values() {
-                if let Some(mut dps) = descriptor_pool_sizes.iter_mut().find(|item| item.ty == *ty)
-                {
+                if let Some(dps) = descriptor_pool_sizes.iter_mut().find(|item| item.ty == *ty) {
                     dps.descriptor_count += 1;
                 } else {
                     descriptor_pool_sizes.push(vk::DescriptorPoolSize {
@@ -111,9 +110,8 @@ impl Shader {
         let desc_alloc_info = vk::DescriptorSetAllocateInfo::default()
             .descriptor_pool(descriptor_pool)
             .set_layouts(descriptor_set_layouts);
-        let descriptor_sets = unsafe { device.allocate_descriptor_sets(&desc_alloc_info).unwrap() };
 
-        descriptor_sets
+        unsafe { device.allocate_descriptor_sets(&desc_alloc_info).unwrap() }
     }
 
     // pub fn ext_shader_create_info(&self) -> ShaderCreateInfoEXT {
@@ -151,10 +149,10 @@ impl Shader {
             if let Some(set) = set {
                 let mut bindings: Vec<vk::DescriptorSetLayoutBinding> =
                     Vec::with_capacity(set.len());
-                let mut binding_flags: Vec<vk::DescriptorBindingFlags> =
+                let binding_flags: Vec<vk::DescriptorBindingFlags> =
                     vec![vk::DescriptorBindingFlags::PARTIALLY_BOUND; set.len()];
 
-                let mut set_layout_create_flags = vk::DescriptorSetLayoutCreateFlags::empty();
+                let set_layout_create_flags = vk::DescriptorSetLayoutCreateFlags::empty();
 
                 let yuv_2_plane = *samplers.add(
                     shader_info
@@ -240,9 +238,11 @@ impl Shader {
                         }
                     };
 
-                    println!(
+                    log::debug!(
                         "{} binding: {:?} {}",
-                        binding_index, binding, descriptor_count
+                        binding_index,
+                        binding,
+                        descriptor_count
                     );
 
                     match binding.ty {

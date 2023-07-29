@@ -1,5 +1,6 @@
 use beuk::ash::vk::{self, BufferUsageFlags, PipelineVertexInputStateCreateInfo};
 use beuk::ctx::RenderContextDescriptor;
+use beuk::memory::BufferDescriptor;
 use beuk::pipeline::BlendState;
 use beuk::{
     ctx::RenderContext,
@@ -15,6 +16,13 @@ use winit::{
 };
 
 fn main() {
+    simple_logger::SimpleLogger::new().init().unwrap();
+    use tracing_subscriber::layer::SubscriberExt;
+    tracing::subscriber::set_global_default(
+        tracing_subscriber::registry().with(tracing_tracy::TracyLayer::new()),
+    )
+    .expect("set up the subscriber");
+
     let event_loop = EventLoop::new();
 
     let window = WindowBuilder::new()
@@ -62,24 +70,13 @@ struct Vertex {
 
 impl Canvas {
     fn new(ctx: &mut RenderContext) -> Self {
-        let vertex_shader = Shader::from_source_text(
-            &ctx.device,
-            include_str!("./triangle/shader.vert"),
-            "shader.vert",
-            beuk::shaders::ShaderKind::Vertex,
-            "main",
-        );
-
-        let fragment_shader = Shader::from_source_text(
-            &ctx.device,
-            include_str!("./triangle/shader.frag"),
-            "shader.frag",
-            beuk::shaders::ShaderKind::Fragment,
-            "main",
-        );
-
-        let vertex_buffer = ctx.buffer_manager.create_buffer_with_data(
-            "vertices",
+        let vertex_buffer = ctx.create_buffer_with_data(
+            &BufferDescriptor {
+                debug_name: "vertices",
+                location: gpu_allocator::MemoryLocation::GpuOnly,
+                size: (std::mem::size_of::<Vertex>() * 3) as u64,
+                usage: BufferUsageFlags::VERTEX_BUFFER,
+            },
             bytemuck::cast_slice(&[
                 Vertex {
                     pos: [-1.0, 1.0, 0.0, 1.0],
@@ -94,22 +91,37 @@ impl Canvas {
                     color: [1.0, 0.0, 0.0, 0.5],
                 },
             ]),
-            BufferUsageFlags::VERTEX_BUFFER,
-            gpu_allocator::MemoryLocation::CpuToGpu,
+            0,
         );
 
-        let index_buffer = ctx.buffer_manager.create_buffer_with_data(
-            "indices",
-            bytemuck::cast_slice(&[0u32, 1, 2]),
-            BufferUsageFlags::INDEX_BUFFER,
-            gpu_allocator::MemoryLocation::CpuToGpu,
+        let index_buffer = ctx.create_buffer_with_data(
+            &BufferDescriptor {
+                debug_name: "indices",
+                location: gpu_allocator::MemoryLocation::GpuOnly,
+                size: (std::mem::size_of::<u16>() * 3) as u64,
+                usage: BufferUsageFlags::INDEX_BUFFER,
+            },
+            bytemuck::cast_slice(&[0u16, 1, 2]),
+            0,
         );
 
         let pipeline_handle =
             ctx.pipeline_manager
-                .create_graphics_pipeline(GraphicsPipelineDescriptor {
-                    vertex_shader,
-                    fragment_shader,
+                .create_graphics_pipeline(&GraphicsPipelineDescriptor {
+                    vertex_shader: Shader::from_source_text(
+                        &ctx.device,
+                        include_str!("./triangle/shader.vert"),
+                        "shader.vert",
+                        beuk::shaders::ShaderKind::Vertex,
+                        "main",
+                    ),
+                    fragment_shader: Shader::from_source_text(
+                        &ctx.device,
+                        include_str!("./triangle/shader.frag"),
+                        "shader.frag",
+                        beuk::shaders::ShaderKind::Fragment,
+                        "main",
+                    ),
                     vertex_input: PipelineVertexInputStateCreateInfo::default()
                         .vertex_attribute_descriptions(&[
                             vk::VertexInputAttributeDescription {
@@ -132,7 +144,7 @@ impl Canvas {
                         }]),
                     color_attachment_formats: &[ctx.render_swapchain.surface_format.format],
                     depth_attachment_format: ctx.render_swapchain.depth_image_format,
-                    viewport: ctx.render_swapchain.surface_resolution,
+                    viewport: None,
                     primitive: PrimitiveState {
                         topology: vk::PrimitiveTopology::TRIANGLE_LIST,
                         ..Default::default()
@@ -186,14 +198,14 @@ impl Canvas {
             ctx.device.cmd_bind_vertex_buffers(
                 command_buffer,
                 0,
-                std::slice::from_ref(&ctx.buffer_manager.get_buffer(self.vertex_buffer).buffer),
+                std::slice::from_ref(&ctx.get_buffer_manager().get(self.vertex_buffer.id()).buffer),
                 &[0],
             );
             ctx.device.cmd_bind_index_buffer(
                 command_buffer,
-                ctx.buffer_manager.get_buffer(self.index_buffer).buffer,
+                ctx.get_buffer_manager().get(self.index_buffer.id()).buffer,
                 0,
-                vk::IndexType::UINT32,
+                vk::IndexType::UINT16,
             );
             ctx.device.cmd_draw_indexed(command_buffer, 3, 1, 0, 0, 1);
 

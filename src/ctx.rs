@@ -9,9 +9,10 @@ use ash::{
         khr::{DynamicRendering, Surface, Swapchain},
     },
     vk::{
-        CommandBuffer, ExtDescriptorIndexingFn, KhrSamplerYcbcrConversionFn,
-        PhysicalDeviceBufferDeviceAddressFeaturesKHR, PhysicalDeviceDescriptorIndexingFeatures,
-        PhysicalDeviceSamplerYcbcrConversionFeatures, PresentModeKHR, SurfaceKHR, API_VERSION_1_2,
+        CommandBuffer, DebugUtilsMessageSeverityFlagsEXT, ExtDescriptorIndexingFn,
+        KhrSamplerYcbcrConversionFn, PhysicalDeviceBufferDeviceAddressFeaturesKHR,
+        PhysicalDeviceDescriptorIndexingFeatures, PhysicalDeviceSamplerYcbcrConversionFeatures,
+        PresentModeKHR, SurfaceKHR, API_VERSION_1_2,
     },
 };
 use ash::{vk, Entry};
@@ -26,7 +27,10 @@ use std::{os::raw::c_char, sync::Arc};
 
 use crate::{
     buffer::Buffer,
-    memory::{BufferManager, PipelineManager, TextureManager},
+    memory::{
+        BufferDescriptor, BufferHandle, BufferManager, MemoryLocation, PipelineManager,
+        TextureManager,
+    },
     texture::Texture,
 };
 
@@ -34,18 +38,11 @@ pub const RESERVED_DESCRIPTOR_COUNT: u32 = 32;
 
 unsafe extern "system" fn vulkan_debug_callback(
     message_severity: vk::DebugUtilsMessageSeverityFlagsEXT,
-    message_type: vk::DebugUtilsMessageTypeFlagsEXT,
+    _message_type: vk::DebugUtilsMessageTypeFlagsEXT,
     p_callback_data: *const vk::DebugUtilsMessengerCallbackDataEXT,
     _user_data: *mut std::os::raw::c_void,
 ) -> vk::Bool32 {
     let callback_data = *p_callback_data;
-    let message_id_number = callback_data.message_id_number;
-
-    let message_id_name = if callback_data.p_message_id_name.is_null() {
-        Cow::from("")
-    } else {
-        CStr::from_ptr(callback_data.p_message_id_name).to_string_lossy()
-    };
 
     let message = if callback_data.p_message.is_null() {
         Cow::from("")
@@ -53,9 +50,23 @@ unsafe extern "system" fn vulkan_debug_callback(
         CStr::from_ptr(callback_data.p_message).to_string_lossy()
     };
 
-    println!(
-      "{message_severity:?}:\n{message_type:?} [{message_id_name} ({message_id_number})] : {message}\n",
-  );
+    match message_severity {
+        DebugUtilsMessageSeverityFlagsEXT::ERROR => {
+            log::error!("{message}");
+        }
+        DebugUtilsMessageSeverityFlagsEXT::INFO => {
+            log::info!("{message}");
+        }
+        DebugUtilsMessageSeverityFlagsEXT::VERBOSE => {
+            log::debug!("{message}");
+        }
+        DebugUtilsMessageSeverityFlagsEXT::WARNING => {
+            log::warn!("{message}");
+        }
+        _ => {
+            log::info!("{message}");
+        }
+    }
 
     vk::FALSE
 }
@@ -111,7 +122,7 @@ pub struct RenderContext {
     pub max_descriptor_count: u32,
     pub command_thread_pool: ThreadPool,
     pub threaded_command_buffers: Arc<RwLock<HashMap<usize, CommandBuffer>>>,
-    pub buffer_manager: BufferManager,
+    pub buffer_manager: Arc<RwLock<BufferManager>>,
     pub texture_manager: TextureManager,
     pub pipeline_manager: PipelineManager,
 
@@ -386,7 +397,11 @@ impl RenderContext {
                 .unwrap(),
             );
 
-            let pipeline_manager = PipelineManager::new(device.clone(), device_properties);
+            let pipeline_manager = PipelineManager::new(
+                device.clone(),
+                device_properties,
+                render_swapchain.surface_resolution,
+            );
 
             Self {
                 entry,
@@ -398,7 +413,7 @@ impl RenderContext {
                 command_thread_pool,
                 threaded_command_buffers,
                 render_swapchain,
-                buffer_manager,
+                buffer_manager: Arc::new(RwLock::new(buffer_manager)),
                 texture_manager,
                 pipeline_manager,
                 // TODO: fetch from device
@@ -611,11 +626,11 @@ impl RenderContext {
             .resize_all_graphics_pipelines(self.render_swapchain.surface_resolution);
     }
 
-    pub fn record<F: FnOnce(&Self, vk::CommandBuffer)>(
+    pub fn record(
         &self,
         command_buffer: vk::CommandBuffer,
         fence: vk::Fence,
-        f: F,
+        f: impl FnOnce(&Self, vk::CommandBuffer),
     ) {
         unsafe {
             self.device
@@ -656,6 +671,16 @@ impl RenderContext {
                 .expect("queue submit failed.");
             self.device.queue_wait_idle(self.present_queue).unwrap();
         }
+    }
+
+    pub fn record_submit(
+        &self,
+        command_buffer: vk::CommandBuffer,
+        fence: vk::Fence,
+        f: impl FnOnce(&Self, vk::CommandBuffer),
+    ) {
+        self.record(command_buffer, fence, f);
+        self.submit(&command_buffer, fence);
     }
 
     /// Submits the command buffer to the present queue with corresponding semaphores and waits for it to finish.
@@ -1049,6 +1074,77 @@ impl RenderContext {
     //         );
     //     }
     // }
+
+    /// Returns a read lock to the buffer manager.
+    pub fn get_buffer_manager(&self) -> std::sync::RwLockReadGuard<BufferManager> {
+        self.buffer_manager.read().unwrap()
+    }
+
+    /// Returns a write lock to the buffer manager.
+    pub fn get_buffer_manager_mut(&self) -> std::sync::RwLockWriteGuard<BufferManager> {
+        self.buffer_manager.write().unwrap()
+    }
+
+    pub fn create_buffer(&self, desc: &BufferDescriptor) -> BufferHandle {
+        let mut manager = self.buffer_manager.write().unwrap();
+        let id = manager.create_buffer(desc);
+        drop(manager);
+
+        BufferHandle::new(id, self.buffer_manager.clone())
+    }
+
+    pub fn create_buffer_with_data(
+        &self,
+        desc: &BufferDescriptor,
+        data: &[u8],
+        offset: usize,
+    ) -> BufferHandle {
+        let mut desc = desc.clone();
+        if desc.location == MemoryLocation::GpuOnly {
+            desc.usage |= vk::BufferUsageFlags::TRANSFER_DST;
+        }
+        let id = self.get_buffer_manager_mut().create_buffer(&desc);
+        let mut handle = BufferHandle::new(id, self.buffer_manager.clone());
+
+        if desc.location == MemoryLocation::GpuOnly {
+            let staging_buffer_id =
+                self.get_buffer_manager_mut()
+                    .create_buffer(&BufferDescriptor {
+                        size: desc.size,
+                        usage: vk::BufferUsageFlags::TRANSFER_SRC,
+                        location: MemoryLocation::CpuToGpu,
+                        debug_name: "Staging buffer",
+                    });
+            let mut staging_handle =
+                BufferHandle::new(staging_buffer_id, self.buffer_manager.clone());
+            staging_handle.set(data, offset);
+
+            self.record(
+                self.setup_command_buffer,
+                self.setup_commands_reuse_fence,
+                |ctx, command_buffer| unsafe {
+                    let buf_mngr = self.get_buffer_manager();
+                    let staging_buffer = buf_mngr.get(staging_handle.id());
+                    let buffer = buf_mngr.get(handle.id());
+                    ctx.device.cmd_copy_buffer(
+                        command_buffer,
+                        staging_buffer.buffer,
+                        buffer.buffer,
+                        &[vk::BufferCopy {
+                            size: desc.size,
+                            src_offset: 0,
+                            dst_offset: 0,
+                        }],
+                    )
+                },
+            );
+            self.submit(&self.setup_command_buffer, self.setup_commands_reuse_fence);
+        } else {
+            handle.set(data, offset);
+        }
+
+        handle.clone()
+    }
 }
 
 impl Drop for RenderContext {
@@ -1082,7 +1178,9 @@ impl Drop for RenderContext {
                     });
                 });
             }
-            self.pipeline_manager.destroy();
+            self.pipeline_manager.clear();
+            self.buffer_manager.write().unwrap().clear();
+
             self.device.destroy_command_pool(self.pool, None);
             self.device.destroy_device(None);
             self.surface_loader.destroy_surface(self.surface, None);

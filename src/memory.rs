@@ -1,7 +1,8 @@
 use ash::vk::{self};
 use std::{
     collections::{BTreeMap, HashMap},
-    mem::size_of_val,
+    fmt::Debug,
+    sync::{Arc, RwLock},
 };
 
 use crate::{
@@ -15,15 +16,79 @@ pub type MemoryLocation = gpu_allocator::MemoryLocation;
 
 /// the handle is also the device address of the buffer
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
-pub struct BufferHandle(u64);
+pub struct BufferId(u64);
 
-#[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord)]
-pub struct TextureHandle(usize);
+#[derive(Debug)]
+pub struct BufferHandle {
+    id: BufferId,
+    manager: Arc<RwLock<BufferManager>>,
+}
+
+impl Clone for BufferHandle {
+    #[tracing::instrument]
+    fn clone(&self) -> Self {
+        self.manager.write().unwrap().retain(self.id);
+        Self {
+            id: self.id,
+            manager: self.manager.clone(),
+        }
+    }
+}
+
+impl Drop for BufferHandle {
+    #[tracing::instrument]
+    fn drop(&mut self) {
+        self.manager.write().unwrap().remove(self.id);
+    }
+}
+
+impl BufferHandle {
+    #[tracing::instrument]
+    pub fn new(id: BufferId, manager: Arc<RwLock<BufferManager>>) -> Self {
+        Self { id, manager }
+    }
+
+    #[inline]
+    pub fn id(&self) -> BufferId {
+        self.id
+    }
+
+    #[tracing::instrument]
+    pub fn set(&mut self, data: &[u8], offset: usize) {
+        let mut manager = self.manager.write().unwrap();
+        let buffer = manager.get_mut(self.id);
+        buffer.copy_from_slice(data, offset);
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct BufferMetadata {
+    retain_count: usize,
+}
 
 pub struct BufferManager {
     device: ash::Device,
     allocator: gpu_allocator::vulkan::Allocator,
-    buffers: HashMap<BufferHandle, Buffer>,
+    buffers: HashMap<BufferId, Buffer>,
+    counters: HashMap<BufferId, usize>,
+}
+
+impl Debug for BufferManager {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("BufferManager")
+            .field("buffers", &self.buffers)
+            .field("counters", &self.counters)
+            .finish()
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct BufferDescriptor {
+    pub debug_name: &'static str,
+    pub size: vk::DeviceSize,
+    pub usage: vk::BufferUsageFlags,
+    /// GpuOnly will be a slower allocation, but it will be faster on the gpu
+    pub location: MemoryLocation,
 }
 
 impl BufferManager {
@@ -32,83 +97,99 @@ impl BufferManager {
             device,
             allocator,
             buffers: HashMap::new(),
+            counters: HashMap::new(),
         }
     }
 
-    pub fn create_buffer(
-        &mut self,
-        debug_name: &str,
-        size: vk::DeviceSize,
-        usage: vk::BufferUsageFlags,
-        location: MemoryLocation,
-    ) -> BufferHandle {
+    #[tracing::instrument]
+    pub fn create_buffer(&mut self, desc: &BufferDescriptor) -> BufferId {
         let buffer = Buffer::new(
             &self.device,
             &mut self.allocator,
-            debug_name,
-            size,
-            usage,
-            location,
+            desc.debug_name,
+            desc.size,
+            desc.usage,
+            desc.location,
         );
-        let handle = BufferHandle(buffer.device_addr);
-        self.buffers.insert(handle, buffer);
-        handle
+        let id = BufferId(buffer.device_addr);
+        self.buffers.insert(id, buffer);
+        self.counters.insert(id, 1);
+        id
     }
 
-    pub fn create_buffer_with_data(
-        &mut self,
-        debug_name: &str,
-        data: &[u8],
-        usage: vk::BufferUsageFlags,
-        location: MemoryLocation,
-    ) -> BufferHandle {
-        let mut buffer = Buffer::new(
-            &self.device,
-            &mut self.allocator,
-            debug_name,
-            size_of_val(data) as vk::DeviceSize,
-            usage,
-            location,
-        );
-        buffer.copy_from_slice(data, 0);
-        let handle = BufferHandle(buffer.device_addr);
-        self.buffers.insert(handle, buffer);
-        handle
-    }
-
-    pub fn get_buffer(&self, handle: BufferHandle) -> &Buffer {
+    pub fn get(&self, handle: BufferId) -> &Buffer {
         self.buffers.get(&handle).unwrap()
     }
 
-    pub fn get_buffer_mut(&mut self, handle: BufferHandle) -> &mut Buffer {
+    pub fn get_mut(&mut self, handle: BufferId) -> &mut Buffer {
         self.buffers.get_mut(&handle).unwrap()
     }
 
-    pub fn remove_buffer(&mut self, handle: BufferHandle) {
+    #[tracing::instrument]
+    pub fn remove(&mut self, handle: BufferId) {
+        let counter = self.counters.get_mut(&handle).unwrap();
+        *counter -= 1;
+        if *counter > 0 {
+            return;
+        }
+
         {
             let buffer = self.buffers.get_mut(&handle).unwrap();
-
             buffer.destroy(&self.device, &mut self.allocator);
         }
 
         self.buffers.remove(&handle);
     }
+
+    #[tracing::instrument]
+    pub fn retain(&mut self, handle: BufferId) {
+        let counter = self
+            .counters
+            .get_mut(&handle)
+            .expect("Tried to retain a buffer that doesn't exist");
+        *counter += 1;
+    }
+
+    /// destroys and clears all buffers
+    pub fn clear(&mut self) {
+        for (_, buffer) in self.buffers.iter_mut() {
+            buffer.destroy(&self.device, &mut self.allocator);
+        }
+        self.buffers.clear();
+        self.counters.clear();
+    }
 }
 
 impl Drop for BufferManager {
     fn drop(&mut self) {
-        for (_, buffer) in self.buffers.iter_mut() {
-            buffer.destroy(&self.device, &mut self.allocator);
-        }
+        self.clear();
     }
 }
 
-// Textures
+pub struct TextureHandle {
+    id: TextureId,
+    manager: Arc<RwLock<TextureManager>>,
+}
+
+impl TextureHandle {
+    pub fn new(id: TextureId, manager: Arc<RwLock<TextureManager>>) -> Self {
+        Self { id, manager }
+    }
+}
+
+impl Drop for TextureHandle {
+    fn drop(&mut self) {
+        self.manager.write().unwrap().remove_texture(self.id);
+    }
+}
+
+#[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct TextureId(usize);
 
 pub struct TextureManager {
     device: ash::Device,
     allocator: gpu_allocator::vulkan::Allocator,
-    textures: BTreeMap<TextureHandle, Texture>,
+    textures: BTreeMap<TextureId, Texture>,
 }
 
 impl TextureManager {
@@ -124,22 +205,22 @@ impl TextureManager {
         &mut self,
         debug_name: &str,
         image_info: &vk::ImageCreateInfo,
-    ) -> TextureHandle {
+    ) -> TextureId {
         let buffer = Texture::new(&self.device, &mut self.allocator, debug_name, image_info);
-        let handle = TextureHandle(self.textures.len());
+        let handle = TextureId(self.textures.len());
         self.textures.insert(handle, buffer);
         handle
     }
 
-    pub fn get_texture(&self, handle: TextureHandle) -> &Texture {
+    pub fn get_texture(&self, handle: TextureId) -> &Texture {
         self.textures.get(&handle).unwrap()
     }
 
-    pub fn get_texture_mut(&mut self, handle: TextureHandle) -> &mut Texture {
+    pub fn get_texture_mut(&mut self, handle: TextureId) -> &mut Texture {
         self.textures.get_mut(&handle).unwrap()
     }
 
-    pub fn remove_texture(&mut self, handle: TextureHandle) {
+    pub fn remove_texture(&mut self, handle: TextureId) {
         {
             let buffer = self.textures.get_mut(&handle).unwrap();
 
@@ -242,10 +323,15 @@ pub struct PipelineManager {
     // handle is serialized pipeline state?
     graphics_pipelines: HashMap<PipelineHandle, GraphicsPipeline>,
     pub immutable_shader_info: ImmutableShaderInfo,
+    swapchain_size: vk::Extent2D,
 }
 
 impl PipelineManager {
-    pub fn new(device: ash::Device, device_properties: vk::PhysicalDeviceProperties) -> Self {
+    pub fn new(
+        device: ash::Device,
+        device_properties: vk::PhysicalDeviceProperties,
+        swapchain_size: vk::Extent2D,
+    ) -> Self {
         Self {
             device: device.clone(),
             graphics_pipelines: HashMap::new(),
@@ -254,13 +340,22 @@ impl PipelineManager {
                 max_descriptor_count: device_properties.limits.max_descriptor_set_samplers,
                 yuv_conversion_samplers: HashMap::new(),
             },
+            swapchain_size,
         }
     }
 
-    pub fn create_graphics_pipeline(&mut self, desc: GraphicsPipelineDescriptor) -> PipelineHandle {
+    pub fn create_graphics_pipeline(
+        &mut self,
+        desc: &GraphicsPipelineDescriptor,
+    ) -> PipelineHandle {
         let key = PipelineHandle(serde_hashkey::to_key(&desc).unwrap());
-        let pipeline: GraphicsPipeline =
-            GraphicsPipeline::new(&self.device, desc, &mut self.immutable_shader_info);
+
+        let pipeline: GraphicsPipeline = GraphicsPipeline::new(
+            &self.device,
+            desc,
+            &mut self.immutable_shader_info,
+            self.swapchain_size,
+        );
         self.graphics_pipelines.insert(key.clone(), pipeline);
         self.graphics_pipelines.get(&key).unwrap();
 
@@ -270,12 +365,20 @@ impl PipelineManager {
     pub fn get_graphics_pipeline(&self, key: &PipelineHandle) -> &GraphicsPipeline {
         self.graphics_pipelines.get(key).unwrap()
     }
+
+    /// will resize all pipelines that are using the swapchain size
     pub fn resize_all_graphics_pipelines(&mut self, extent: vk::Extent2D) {
         for (_, pipeline) in self.graphics_pipelines.iter_mut() {
-            pipeline.viewports[0].width = extent.width as f32;
-            pipeline.viewports[0].height = extent.height as f32;
-            pipeline.scissors[0].extent = extent;
+            // if the pipeline is using the swapchain size, update it
+            if pipeline.viewports[0].width == self.swapchain_size.width as f32
+                && pipeline.viewports[0].height == self.swapchain_size.height as f32
+            {
+                pipeline.viewports[0].width = extent.width as f32;
+                pipeline.viewports[0].height = extent.height as f32;
+                pipeline.scissors[0].extent = extent;
+            }
         }
+        self.swapchain_size = extent;
     }
 
     fn create_immutable_samplers(device: &ash::Device) -> HashMap<SamplerDesc, vk::Sampler> {
@@ -326,7 +429,7 @@ impl PipelineManager {
         result
     }
 
-    pub fn destroy(&mut self) {
+    pub fn clear(&mut self) {
         unsafe {
             for sampler in self.immutable_shader_info.immutable_samplers.values() {
                 self.device.destroy_sampler(*sampler, None);
@@ -334,6 +437,15 @@ impl PipelineManager {
             for (_, pipeline) in self.graphics_pipelines.iter_mut() {
                 self.device.destroy_pipeline_layout(pipeline.layout, None);
                 self.device.destroy_pipeline(pipeline.pipeline, None);
+
+                self.device
+                    .destroy_shader_module(pipeline.vertex_shader.module, None);
+                self.device
+                    .destroy_shader_module(pipeline.fragment_shader.module, None);
+
+                for layout in pipeline.descriptor_set_layouts.iter() {
+                    self.device.destroy_descriptor_set_layout(*layout, None);
+                }
             }
         }
     }
@@ -341,6 +453,6 @@ impl PipelineManager {
 
 impl Drop for PipelineManager {
     fn drop(&mut self) {
-        self.destroy();
+        self.clear();
     }
 }

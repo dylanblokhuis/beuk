@@ -1,6 +1,6 @@
 use beuk::ash::vk::{self, BufferUsageFlags, PipelineVertexInputStateCreateInfo};
 use beuk::ctx::{RenderContextDescriptor, SamplerDesc};
-use beuk::memory::MemoryLocation;
+use beuk::memory::{BufferDescriptor, MemoryLocation};
 use beuk::pipeline::BlendState;
 use beuk::{
     ctx::RenderContext,
@@ -63,7 +63,7 @@ struct Vertex {
 }
 
 impl Canvas {
-    fn new(ctx: &mut RenderContext) -> Self {
+    fn new(ctx: &RenderContext) -> Self {
         let vertex_shader = Shader::from_source_text(
             &ctx.device,
             include_str!("./texture/shader.vert"),
@@ -80,8 +80,13 @@ impl Canvas {
             "main",
         );
 
-        let vertex_buffer = ctx.buffer_manager.create_buffer_with_data(
-            "vertices",
+        let vertex_buffer = ctx.create_buffer_with_data(
+            &BufferDescriptor {
+                debug_name: "vertices",
+                location: MemoryLocation::CpuToGpu,
+                size: (std::mem::size_of::<Vertex>() * 3) as u64,
+                usage: BufferUsageFlags::VERTEX_BUFFER,
+            },
             bytemuck::cast_slice(&[
                 Vertex {
                     pos: [-1.0, 1.0, 0.0, 1.0],
@@ -96,15 +101,24 @@ impl Canvas {
                     color: [1.0, 0.0, 0.0, 0.5],
                 },
             ]),
-            BufferUsageFlags::VERTEX_BUFFER,
-            gpu_allocator::MemoryLocation::CpuToGpu,
+            0,
         );
 
-        let index_buffer = ctx.buffer_manager.create_buffer_with_data(
-            "indices",
+        // let index_buffer = ctx.buffer_manager.create_buffer_with_data(
+        //     "indices",
+        //     bytemuck::cast_slice(&[0u32, 1, 2]),
+        //     BufferUsageFlags::INDEX_BUFFER,
+        //     gpu_allocator::MemoryLocation::CpuToGpu,
+        // );
+        let index_buffer = ctx.create_buffer_with_data(
+            &BufferDescriptor {
+                debug_name: "indices",
+                location: MemoryLocation::CpuToGpu,
+                size: (std::mem::size_of::<u32>() * 3) as u64,
+                usage: BufferUsageFlags::INDEX_BUFFER,
+            },
             bytemuck::cast_slice(&[0u32, 1, 2]),
-            BufferUsageFlags::INDEX_BUFFER,
-            gpu_allocator::MemoryLocation::CpuToGpu,
+            0,
         );
 
         let pipeline_handle =
