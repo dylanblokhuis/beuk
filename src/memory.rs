@@ -381,15 +381,62 @@ impl ImmutableShaderInfo {
     }
 }
 
+#[derive(Debug)]
+pub struct PipelineHandle {
+    id: PipelineId,
+    manager: Arc<RwLock<PipelineManager>>,
+}
+
+impl PipelineHandle {
+    pub fn new(id: PipelineId, manager: Arc<RwLock<PipelineManager>>) -> Self {
+        Self { id, manager }
+    }
+
+    #[inline]
+    pub fn id(&self) -> PipelineId {
+        self.id.clone()
+    }
+}
+
+impl Clone for PipelineHandle {
+    #[tracing::instrument]
+    fn clone(&self) -> Self {
+        self.manager.write().unwrap().retain(self.id.clone());
+        Self {
+            id: self.id.clone(),
+            manager: self.manager.clone(),
+        }
+    }
+}
+
+impl Drop for PipelineHandle {
+    fn drop(&mut self) {
+        self.manager
+            .write()
+            .unwrap()
+            .remove_graphics_pipeline(self.id.clone());
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct PipelineHandle(serde_hashkey::Key);
+pub struct PipelineId(serde_hashkey::Key);
 
 pub struct PipelineManager {
     device: ash::Device,
     // handle is serialized pipeline state?
-    graphics_pipelines: HashMap<PipelineHandle, GraphicsPipeline>,
+    graphics_pipelines: HashMap<PipelineId, GraphicsPipeline>,
+    counters: HashMap<PipelineId, usize>,
     pub immutable_shader_info: ImmutableShaderInfo,
     swapchain_size: vk::Extent2D,
+}
+
+impl Debug for PipelineManager {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PipelineManager")
+            .field("graphics_pipelines", &self.graphics_pipelines)
+            .field("counters", &self.counters)
+            .finish()
+    }
 }
 
 impl PipelineManager {
@@ -401,6 +448,7 @@ impl PipelineManager {
         Self {
             device: device.clone(),
             graphics_pipelines: HashMap::new(),
+            counters: HashMap::new(),
             immutable_shader_info: ImmutableShaderInfo {
                 immutable_samplers: Self::create_immutable_samplers(&device),
                 max_descriptor_count: device_properties.limits.max_descriptor_set_samplers,
@@ -410,11 +458,8 @@ impl PipelineManager {
         }
     }
 
-    pub fn create_graphics_pipeline(
-        &mut self,
-        desc: &GraphicsPipelineDescriptor,
-    ) -> PipelineHandle {
-        let key = PipelineHandle(serde_hashkey::to_key(&desc).unwrap());
+    pub fn create_graphics_pipeline(&mut self, desc: &GraphicsPipelineDescriptor) -> PipelineId {
+        let id = PipelineId(serde_hashkey::to_key(&desc).unwrap());
 
         let pipeline: GraphicsPipeline = GraphicsPipeline::new(
             &self.device,
@@ -422,14 +467,23 @@ impl PipelineManager {
             &mut self.immutable_shader_info,
             self.swapchain_size,
         );
-        self.graphics_pipelines.insert(key.clone(), pipeline);
-        self.graphics_pipelines.get(&key).unwrap();
+        self.graphics_pipelines.insert(id.clone(), pipeline);
+        self.counters.insert(id.clone(), 1);
 
-        key
+        id
     }
 
-    pub fn get_graphics_pipeline(&self, key: &PipelineHandle) -> &GraphicsPipeline {
+    pub fn get_graphics_pipeline(&self, key: &PipelineId) -> &GraphicsPipeline {
         self.graphics_pipelines.get(key).unwrap()
+    }
+
+    #[tracing::instrument]
+    pub fn retain(&mut self, id: PipelineId) {
+        let counter = self
+            .counters
+            .get_mut(&id)
+            .expect("Tried to retain a pipeline that doesn't exist");
+        *counter += 1;
     }
 
     /// will resize all pipelines that are using the swapchain size
@@ -495,7 +549,22 @@ impl PipelineManager {
         result
     }
 
+    pub fn remove_graphics_pipeline(&mut self, id: PipelineId) {
+        let pipeline = self.get_graphics_pipeline(&id);
+        pipeline.destroy(&self.device);
+        self.graphics_pipelines.remove(&id);
+    }
+
     pub fn clear(&mut self) {
+        for (_, pipeline) in self.graphics_pipelines.iter() {
+            pipeline.destroy(&self.device);
+        }
+        self.graphics_pipelines.clear();
+    }
+}
+
+impl Drop for PipelineManager {
+    fn drop(&mut self) {
         unsafe {
             for sampler in self.immutable_shader_info.immutable_samplers.values() {
                 self.device.destroy_sampler(*sampler, None);
@@ -504,25 +573,8 @@ impl PipelineManager {
                 self.device.destroy_sampler_ycbcr_conversion(*conv, None);
                 self.device.destroy_sampler(*sampler, None);
             }
-            for (_, pipeline) in self.graphics_pipelines.iter_mut() {
-                self.device.destroy_pipeline_layout(pipeline.layout, None);
-                self.device.destroy_pipeline(pipeline.pipeline, None);
-
-                self.device
-                    .destroy_shader_module(pipeline.vertex_shader.module, None);
-                self.device
-                    .destroy_shader_module(pipeline.fragment_shader.module, None);
-
-                for layout in pipeline.descriptor_set_layouts.iter() {
-                    self.device.destroy_descriptor_set_layout(*layout, None);
-                }
-            }
         }
-    }
-}
 
-impl Drop for PipelineManager {
-    fn drop(&mut self) {
         self.clear();
     }
 }

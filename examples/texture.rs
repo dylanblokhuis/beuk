@@ -32,7 +32,7 @@ fn main() {
         present_mode: vk::PresentModeKHR::default(),
     });
 
-    let canvas = Canvas::new(&mut ctx);
+    let canvas = Canvas::new(&ctx);
 
     event_loop.run(move |event, _, control_flow| match event {
         Event::WindowEvent {
@@ -64,7 +64,7 @@ struct Vertex {
 }
 
 impl Canvas {
-    fn new(ctx: &mut RenderContext) -> Self {
+    fn new(ctx: &RenderContext) -> Self {
         let vertex_shader = Shader::from_source_text(
             &ctx.device,
             include_str!("./texture/shader.vert"),
@@ -122,43 +122,41 @@ impl Canvas {
             0,
         );
 
-        let pipeline_handle =
-            ctx.pipeline_manager
-                .create_graphics_pipeline(&GraphicsPipelineDescriptor {
-                    vertex_shader,
-                    fragment_shader,
-                    vertex_input: PipelineVertexInputStateCreateInfo::default()
-                        .vertex_attribute_descriptions(&[
-                            vk::VertexInputAttributeDescription {
-                                location: 0,
-                                binding: 0,
-                                format: vk::Format::R32G32B32A32_SFLOAT,
-                                offset: bytemuck::offset_of!(Vertex, pos) as u32,
-                            },
-                            vk::VertexInputAttributeDescription {
-                                location: 1,
-                                binding: 0,
-                                format: vk::Format::R32G32B32A32_SFLOAT,
-                                offset: bytemuck::offset_of!(Vertex, color) as u32,
-                            },
-                        ])
-                        .vertex_binding_descriptions(&[vk::VertexInputBindingDescription {
-                            binding: 0,
-                            stride: std::mem::size_of::<Vertex>() as u32,
-                            input_rate: vk::VertexInputRate::VERTEX,
-                        }]),
-                    color_attachment_formats: &[ctx.render_swapchain.surface_format.format],
-                    depth_attachment_format: ctx.render_swapchain.depth_image_format,
-                    viewport: None,
-                    primitive: PrimitiveState {
-                        topology: vk::PrimitiveTopology::TRIANGLE_LIST,
-                        ..Default::default()
+        let pipeline_handle = ctx.create_graphics_pipeline(&GraphicsPipelineDescriptor {
+            vertex_shader,
+            fragment_shader,
+            vertex_input: PipelineVertexInputStateCreateInfo::default()
+                .vertex_attribute_descriptions(&[
+                    vk::VertexInputAttributeDescription {
+                        location: 0,
+                        binding: 0,
+                        format: vk::Format::R32G32B32A32_SFLOAT,
+                        offset: bytemuck::offset_of!(Vertex, pos) as u32,
                     },
-                    depth_stencil: Default::default(),
-                    push_constant_range: None,
-                    blend: vec![BlendState::ALPHA_BLENDING],
-                    multisample: beuk::pipeline::MultisampleState::default(),
-                });
+                    vk::VertexInputAttributeDescription {
+                        location: 1,
+                        binding: 0,
+                        format: vk::Format::R32G32B32A32_SFLOAT,
+                        offset: bytemuck::offset_of!(Vertex, color) as u32,
+                    },
+                ])
+                .vertex_binding_descriptions(&[vk::VertexInputBindingDescription {
+                    binding: 0,
+                    stride: std::mem::size_of::<Vertex>() as u32,
+                    input_rate: vk::VertexInputRate::VERTEX,
+                }]),
+            color_attachment_formats: &[ctx.render_swapchain.surface_format.format],
+            depth_attachment_format: ctx.render_swapchain.depth_image_format,
+            viewport: None,
+            primitive: PrimitiveState {
+                topology: vk::PrimitiveTopology::TRIANGLE_LIST,
+                ..Default::default()
+            },
+            depth_stencil: Default::default(),
+            push_constant_range: None,
+            blend: vec![BlendState::ALPHA_BLENDING],
+            multisample: beuk::pipeline::MultisampleState::default(),
+        });
 
         let wallpaper_bytes = include_bytes!("./texture/95.jpg");
         let image = image::load_from_memory(wallpaper_bytes).unwrap();
@@ -195,7 +193,8 @@ impl Canvas {
         let view = ctx.get_texture_view(&texture_handle);
 
         unsafe {
-            let pipeline = ctx.pipeline_manager.get_graphics_pipeline(&pipeline_handle);
+            let pipelines = ctx.get_pipeline_manager();
+            let pipeline = pipelines.get_graphics_pipeline(&pipeline_handle.id());
             ctx.device.update_descriptor_sets(
                 &[vk::WriteDescriptorSet::default()
                     .dst_set(pipeline.descriptor_sets[0])
@@ -205,13 +204,11 @@ impl Canvas {
                         &vk::DescriptorImageInfo::default()
                             .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
                             .image_view(*view)
-                            .sampler(ctx.pipeline_manager.immutable_shader_info.get_sampler(
-                                &SamplerDesc {
-                                    address_modes: vk::SamplerAddressMode::REPEAT,
-                                    mipmap_mode: vk::SamplerMipmapMode::LINEAR,
-                                    texel_filter: vk::Filter::LINEAR,
-                                },
-                            )),
+                            .sampler(pipelines.immutable_shader_info.get_sampler(&SamplerDesc {
+                                address_modes: vk::SamplerAddressMode::REPEAT,
+                                mipmap_mode: vk::SamplerMipmapMode::LINEAR,
+                                texel_filter: vk::Filter::LINEAR,
+                            })),
                     ))],
                 &[],
             );
@@ -253,10 +250,9 @@ impl Canvas {
 
             ctx.begin_rendering(command_buffer, color_attachments, Some(depth_attachment));
 
-            let pipeline = ctx
-                .pipeline_manager
-                .get_graphics_pipeline(&self.pipeline_handle);
-            pipeline.bind(&ctx.device, command_buffer);
+            ctx.get_pipeline_manager()
+                .get_graphics_pipeline(&self.pipeline_handle.id())
+                .bind(&ctx.device, command_buffer);
 
             ctx.device.cmd_bind_vertex_buffers(
                 command_buffer,

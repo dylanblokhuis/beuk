@@ -25,9 +25,12 @@ use std::{cell::RefCell, default::Default};
 use std::{ops::Drop, sync::RwLock};
 use std::{os::raw::c_char, sync::Arc};
 
-use crate::memory::{
-    BufferDescriptor, BufferHandle, BufferManager, MemoryLocation, PipelineManager, TextureHandle,
-    TextureManager,
+use crate::{
+    memory::{
+        BufferDescriptor, BufferHandle, BufferManager, MemoryLocation, PipelineHandle,
+        PipelineManager, TextureHandle, TextureManager,
+    },
+    pipeline::GraphicsPipelineDescriptor,
 };
 
 pub const RESERVED_DESCRIPTOR_COUNT: u32 = 32;
@@ -120,7 +123,7 @@ pub struct RenderContext {
     pub threaded_command_buffers: Arc<RwLock<HashMap<usize, CommandBuffer>>>,
     pub buffer_manager: Arc<RwLock<BufferManager>>,
     pub texture_manager: Arc<RwLock<TextureManager>>,
-    pub pipeline_manager: PipelineManager,
+    pub pipeline_manager: Arc<RwLock<PipelineManager>>,
 
     pub pdevice: vk::PhysicalDevice,
     pub queue_family_index: u32,
@@ -411,7 +414,7 @@ impl RenderContext {
                 render_swapchain,
                 buffer_manager: Arc::new(RwLock::new(buffer_manager)),
                 texture_manager: Arc::new(RwLock::new(texture_manager)),
-                pipeline_manager,
+                pipeline_manager: Arc::new(RwLock::new(pipeline_manager)),
                 // TODO: fetch from device
                 max_descriptor_count: {
                     (512 * 1024).min(
@@ -619,6 +622,8 @@ impl RenderContext {
         );
         self.render_swapchain = render_swapchain;
         self.pipeline_manager
+            .write()
+            .unwrap()
             .resize_all_graphics_pipelines(self.render_swapchain.surface_resolution);
     }
 
@@ -1174,6 +1179,17 @@ impl RenderContext {
         let texture = manager.get_mut(texture.id());
         texture.create_view(&self.device)
     }
+
+    pub fn create_graphics_pipeline(&self, desc: &GraphicsPipelineDescriptor) -> PipelineHandle {
+        let mut manager = self.pipeline_manager.write().unwrap();
+        let id = manager.create_graphics_pipeline(&desc);
+        drop(manager);
+        PipelineHandle::new(id, self.pipeline_manager.clone())
+    }
+
+    pub fn get_pipeline_manager(&self) -> std::sync::RwLockReadGuard<PipelineManager> {
+        self.pipeline_manager.read().unwrap()
+    }
 }
 
 impl Drop for RenderContext {
@@ -1209,11 +1225,11 @@ impl Drop for RenderContext {
             });
 
             log::debug!("Dropping pipeline manager");
-            self.pipeline_manager.clear();
+            self.pipeline_manager.write().unwrap().clear();
             log::debug!("Dropping buffer manager");
-            self.buffer_manager.write().unwrap().clear();
+            self.get_buffer_manager_mut().clear();
             log::debug!("Dropping texture manager");
-            self.texture_manager.write().unwrap().clear();
+            self.get_texture_manager_mut().clear();
 
             self.device.destroy_command_pool(self.pool, None);
             self.device.destroy_device(None);

@@ -759,4 +759,18 @@ impl GraphicsPipeline {
             }
         }
     }
+
+    pub fn destroy(&self, device: &Device) {
+        unsafe {
+            device.destroy_pipeline_layout(self.layout, None);
+            device.destroy_pipeline(self.pipeline, None);
+
+            device.destroy_shader_module(self.vertex_shader.module, None);
+            device.destroy_shader_module(self.fragment_shader.module, None);
+
+            for layout in self.descriptor_set_layouts.iter() {
+                device.destroy_descriptor_set_layout(*layout, None);
+            }
+        }
+    }
 }
