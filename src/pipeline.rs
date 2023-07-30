@@ -489,7 +489,7 @@ impl Default for MultisampleState {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct GraphicsPipelineDescriptor<'a> {
     pub vertex_shader: Shader,
     pub fragment_shader: Shader,

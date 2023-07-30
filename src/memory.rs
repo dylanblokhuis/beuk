@@ -54,7 +54,7 @@ impl BufferHandle {
         self.id
     }
 
-    #[tracing::instrument]
+    #[tracing::instrument(skip(self))]
     pub fn set(&mut self, data: &[u8], offset: usize) {
         let mut manager = self.manager.write().unwrap();
         let buffer = manager.get_mut(self.id);
@@ -68,10 +68,10 @@ struct BufferMetadata {
 }
 
 pub struct BufferManager {
-    device: ash::Device,
-    allocator: gpu_allocator::vulkan::Allocator,
     buffers: HashMap<BufferId, Buffer>,
     counters: HashMap<BufferId, usize>,
+    device: ash::Device,
+    allocator: gpu_allocator::vulkan::Allocator,
 }
 
 impl Debug for BufferManager {
@@ -113,7 +113,7 @@ impl BufferManager {
         }
     }
 
-    #[tracing::instrument]
+    #[tracing::instrument(skip(self))]
     pub fn create_buffer(&mut self, desc: &BufferDescriptor) -> BufferId {
         let buffer = Buffer::new(
             &self.device,
@@ -129,15 +129,17 @@ impl BufferManager {
         id
     }
 
+    #[tracing::instrument(skip(self))]
     pub fn get(&self, handle: BufferId) -> &Buffer {
         self.buffers.get(&handle).unwrap()
     }
 
+    #[tracing::instrument(skip(self))]
     pub fn get_mut(&mut self, handle: BufferId) -> &mut Buffer {
         self.buffers.get_mut(&handle).unwrap()
     }
 
-    #[tracing::instrument]
+    #[tracing::instrument(skip(self))]
     pub fn remove(&mut self, handle: BufferId) {
         let counter = self.counters.get_mut(&handle).unwrap();
         *counter -= 1;
@@ -153,7 +155,7 @@ impl BufferManager {
         self.buffers.remove(&handle);
     }
 
-    #[tracing::instrument]
+    #[tracing::instrument(skip(self))]
     pub fn retain(&mut self, handle: BufferId) {
         let counter = self
             .counters
@@ -216,11 +218,11 @@ impl Drop for TextureHandle {
 pub struct TextureId(u64);
 
 pub struct TextureManager {
-    device: ash::Device,
-    allocator: gpu_allocator::vulkan::Allocator,
+    next_id: u64,
     textures: HashMap<TextureId, Texture>,
     counters: HashMap<TextureId, usize>,
-    next_id: u64,
+    device: ash::Device,
+    allocator: gpu_allocator::vulkan::Allocator,
 }
 
 impl Debug for TextureManager {
@@ -243,6 +245,7 @@ impl TextureManager {
         }
     }
 
+    #[tracing::instrument(skip(self))]
     pub fn create_texture(
         &mut self,
         debug_name: &str,
@@ -256,14 +259,17 @@ impl TextureManager {
         id
     }
 
+    #[tracing::instrument(skip(self))]
     pub fn get(&self, handle: TextureId) -> &Texture {
         self.textures.get(&handle).unwrap()
     }
 
+    #[tracing::instrument(skip(self))]
     pub fn get_mut(&mut self, handle: TextureId) -> &mut Texture {
         self.textures.get_mut(&handle).unwrap()
     }
 
+    #[tracing::instrument(skip(self))]
     pub fn remove(&mut self, handle: TextureId) {
         let counter = self.counters.get_mut(&handle).unwrap();
         *counter -= 1;
@@ -281,7 +287,7 @@ impl TextureManager {
         self.textures.remove(&handle);
     }
 
-    #[tracing::instrument]
+    #[tracing::instrument(skip(self))]
     pub fn retain(&mut self, handle: TextureId) {
         let counter = self
             .counters
@@ -315,7 +321,10 @@ pub struct ImmutableShaderInfo {
 }
 impl ImmutableShaderInfo {
     pub fn get_sampler(&self, desc: &SamplerDesc) -> vk::Sampler {
-        *self.immutable_samplers.get(desc).unwrap()
+        *self
+            .immutable_samplers
+            .get(desc)
+            .expect("Tried to get an immutable sampler that doesn't exist.")
     }
 
     pub fn get_yuv_conversion_sampler(
@@ -422,10 +431,9 @@ impl Drop for PipelineHandle {
 pub struct PipelineId(serde_hashkey::Key);
 
 pub struct PipelineManager {
-    device: ash::Device,
-    // handle is serialized pipeline state?
     graphics_pipelines: HashMap<PipelineId, GraphicsPipeline>,
     counters: HashMap<PipelineId, usize>,
+    device: ash::Device,
     pub immutable_shader_info: ImmutableShaderInfo,
     swapchain_size: vk::Extent2D,
 }
@@ -458,6 +466,7 @@ impl PipelineManager {
         }
     }
 
+    #[tracing::instrument(skip(self))]
     pub fn create_graphics_pipeline(&mut self, desc: &GraphicsPipelineDescriptor) -> PipelineId {
         let id = PipelineId(serde_hashkey::to_key(&desc).unwrap());
 
@@ -473,11 +482,12 @@ impl PipelineManager {
         id
     }
 
+    #[tracing::instrument(skip(self))]
     pub fn get_graphics_pipeline(&self, key: &PipelineId) -> &GraphicsPipeline {
         self.graphics_pipelines.get(key).unwrap()
     }
 
-    #[tracing::instrument]
+    #[tracing::instrument(skip(self))]
     pub fn retain(&mut self, id: PipelineId) {
         let counter = self
             .counters
@@ -549,6 +559,7 @@ impl PipelineManager {
         result
     }
 
+    #[tracing::instrument]
     pub fn remove_graphics_pipeline(&mut self, id: PipelineId) {
         let pipeline = self.get_graphics_pipeline(&id);
         pipeline.destroy(&self.device);

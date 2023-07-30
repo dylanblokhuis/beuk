@@ -199,13 +199,17 @@ impl Canvas {
                     command_buffer,
                     0,
                     std::slice::from_ref(
-                        &ctx.get_buffer_manager().get(self.vertex_buffer.id()).buffer,
+                        &ctx.get_buffer_manager()
+                            .get(self.vertex_buffer.id())
+                            .buffer(),
                     ),
                     &[0],
                 );
                 ctx.device.cmd_bind_index_buffer(
                     command_buffer,
-                    ctx.get_buffer_manager().get(self.index_buffer.id()).buffer,
+                    ctx.get_buffer_manager()
+                        .get(self.index_buffer.id())
+                        .buffer(),
                     0,
                     vk::IndexType::UINT16,
                 );

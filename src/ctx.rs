@@ -606,6 +606,7 @@ impl RenderContext {
         }
     }
 
+    #[tracing::instrument(skip(self))]
     pub fn recreate_swapchain(&self) {
         unsafe {
             self.device
@@ -690,6 +691,7 @@ impl RenderContext {
     }
 
     /// Submits the command buffer to the present queue with corresponding semaphores and waits for it to finish.
+    #[tracing::instrument(skip(self))]
     pub fn present_submit(&self, present_index: u32) {
         let submit_info = vk::SubmitInfo::default()
             .wait_semaphores(std::slice::from_ref(&self.present_complete_semaphore))
@@ -751,6 +753,7 @@ impl RenderContext {
     }
 
     /// Acquires the next image, transitions the image from the swapchain and records the draw command buffer. Returns the present_index
+    #[tracing::instrument(skip_all)]
     pub fn present_record<F: FnOnce(&Self, vk::CommandBuffer, ImageView, ImageView)>(
         &self,
         present_index: u32,
@@ -968,6 +971,7 @@ impl RenderContext {
         (pool, m_command_buffers_clone)
     }
 
+    #[tracing::instrument(skip(self))]
     pub fn copy_buffer_to_texture(&self, buffer: &BufferHandle, texture: &TextureHandle) {
         self.record(
             self.setup_command_buffer,
@@ -1004,7 +1008,7 @@ impl RenderContext {
 
                 ctx.device.cmd_copy_buffer_to_image(
                     command_buffer,
-                    ctx.get_buffer_manager().get(buffer.id()).buffer,
+                    ctx.get_buffer_manager().get(buffer.id()).buffer(),
                     texture.image,
                     vk::ImageLayout::TRANSFER_DST_OPTIMAL,
                     &[vk::BufferImageCopy::default()
@@ -1157,8 +1161,8 @@ impl RenderContext {
                     let buffer = buf_mngr.get(handle.id());
                     ctx.device.cmd_copy_buffer(
                         command_buffer,
-                        staging_buffer.buffer,
-                        buffer.buffer,
+                        staging_buffer.buffer(),
+                        buffer.buffer(),
                         &[vk::BufferCopy {
                             size: desc.size,
                             src_offset: 0,

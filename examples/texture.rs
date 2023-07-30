@@ -10,6 +10,7 @@ use beuk::{
 };
 use image::EncodableLayout;
 use raw_window_handle::{HasRawDisplayHandle, HasRawWindowHandle};
+use tracing_subscriber::prelude::__tracing_subscriber_SubscriberExt;
 use winit::{
     event::{Event, WindowEvent},
     event_loop::EventLoop,
@@ -18,6 +19,11 @@ use winit::{
 
 fn main() {
     simple_logger::SimpleLogger::new().init().unwrap();
+    tracing::subscriber::set_global_default(
+        tracing_subscriber::registry().with(tracing_tracy::TracyLayer::new()),
+    )
+    .expect("set up the subscriber");
+
     let event_loop = EventLoop::new();
 
     let window = WindowBuilder::new()
@@ -257,17 +263,16 @@ impl Canvas {
                     .get_graphics_pipeline(&self.pipeline_handle.id())
                     .bind(&ctx.device, command_buffer);
 
+                let manager = ctx.get_buffer_manager();
                 ctx.device.cmd_bind_vertex_buffers(
                     command_buffer,
                     0,
-                    std::slice::from_ref(
-                        &ctx.get_buffer_manager().get(self.vertex_buffer.id()).buffer,
-                    ),
+                    std::slice::from_ref(&manager.get(self.vertex_buffer.id()).buffer),
                     &[0],
                 );
                 ctx.device.cmd_bind_index_buffer(
                     command_buffer,
-                    ctx.get_buffer_manager().get(self.index_buffer.id()).buffer,
+                    manager.get(self.index_buffer.id()).buffer(),
                     0,
                     vk::IndexType::UINT32,
                 );

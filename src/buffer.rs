@@ -7,11 +7,11 @@ use gpu_allocator::{
 #[derive(Debug)]
 pub struct Buffer {
     pub buffer: vk::Buffer,
-    pub allocation: Option<Allocation>,
     pub size: u64,
     pub device_addr: u64,
     pub has_been_written_to: bool,
     pub offset: u64,
+    pub allocation: Option<Allocation>,
 }
 
 impl Buffer {
@@ -96,5 +96,10 @@ impl Buffer {
             mapped_slice.copy_from_slice(slice);
         }
         self.has_been_written_to = true;
+    }
+
+    #[inline]
+    pub fn buffer(&self) -> vk::Buffer {
+        self.buffer
     }
 }
