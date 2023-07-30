@@ -31,7 +31,7 @@ fn main() {
         .build(&event_loop)
         .unwrap();
 
-    let mut ctx = beuk::ctx::RenderContext::new(RenderContextDescriptor {
+    let ctx = beuk::ctx::RenderContext::new(RenderContextDescriptor {
         display_handle: window.raw_display_handle(),
         window_handle: window.raw_window_handle(),
         present_mode: vk::PresentModeKHR::default(),
@@ -49,7 +49,7 @@ fn main() {
             window.request_redraw();
         }
         Event::RedrawRequested(_) => {
-            canvas.draw(&mut ctx);
+            canvas.draw(&ctx);
         }
         _ => (),
     });
@@ -105,6 +105,7 @@ impl Canvas {
             0,
         );
 
+        let swapchain = ctx.get_swapchain();
         let pipeline_handle = ctx.create_graphics_pipeline(&GraphicsPipelineDescriptor {
             vertex_shader: Shader::from_source_text(
                 &ctx.device,
@@ -140,8 +141,8 @@ impl Canvas {
                     stride: std::mem::size_of::<Vertex>() as u32,
                     input_rate: vk::VertexInputRate::VERTEX,
                 }]),
-            color_attachment_formats: &[ctx.render_swapchain.surface_format.format],
-            depth_attachment_format: ctx.render_swapchain.depth_image_format,
+            color_attachment_formats: &[swapchain.surface_format.format],
+            depth_attachment_format: swapchain.depth_image_format,
             viewport: None,
             primitive: PrimitiveState {
                 topology: vk::PrimitiveTopology::TRIANGLE_LIST,
@@ -159,55 +160,60 @@ impl Canvas {
         }
     }
 
-    pub fn draw(&self, ctx: &mut RenderContext) {
+    pub fn draw(&self, ctx: &RenderContext) {
         let present_index = ctx.acquire_present_index();
 
-        ctx.present_record(present_index, |ctx, command_buffer, present_index| unsafe {
-            let color_attachments = &[vk::RenderingAttachmentInfo::default()
-                .image_view(ctx.render_swapchain.present_image_views[present_index as usize])
-                .image_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
-                .load_op(vk::AttachmentLoadOp::CLEAR)
-                .store_op(vk::AttachmentStoreOp::STORE)
-                .clear_value(vk::ClearValue {
-                    color: vk::ClearColorValue {
-                        float32: [0.1, 0.1, 0.1, 1.0],
-                    },
-                })];
+        ctx.present_record(
+            present_index,
+            |ctx, command_buffer, color_view, depth_view| unsafe {
+                let color_attachments = &[vk::RenderingAttachmentInfo::default()
+                    .image_view(color_view)
+                    .image_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
+                    .load_op(vk::AttachmentLoadOp::CLEAR)
+                    .store_op(vk::AttachmentStoreOp::STORE)
+                    .clear_value(vk::ClearValue {
+                        color: vk::ClearColorValue {
+                            float32: [0.1, 0.1, 0.1, 1.0],
+                        },
+                    })];
 
-            let depth_attachment = &vk::RenderingAttachmentInfo::default()
-                .image_view(ctx.render_swapchain.depth_image_view)
-                .image_layout(vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL)
-                .load_op(vk::AttachmentLoadOp::CLEAR)
-                .store_op(vk::AttachmentStoreOp::STORE)
-                .clear_value(vk::ClearValue {
-                    depth_stencil: vk::ClearDepthStencilValue {
-                        depth: 1.0,
-                        stencil: 0,
-                    },
-                });
+                let depth_attachment = &vk::RenderingAttachmentInfo::default()
+                    .image_view(depth_view)
+                    .image_layout(vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL)
+                    .load_op(vk::AttachmentLoadOp::CLEAR)
+                    .store_op(vk::AttachmentStoreOp::STORE)
+                    .clear_value(vk::ClearValue {
+                        depth_stencil: vk::ClearDepthStencilValue {
+                            depth: 1.0,
+                            stencil: 0,
+                        },
+                    });
 
-            ctx.begin_rendering(command_buffer, color_attachments, Some(depth_attachment));
+                ctx.begin_rendering(command_buffer, color_attachments, Some(depth_attachment));
 
-            ctx.get_pipeline_manager()
-                .get_graphics_pipeline(&self.pipeline_handle.id())
-                .bind(&ctx.device, command_buffer);
+                ctx.get_pipeline_manager()
+                    .get_graphics_pipeline(&self.pipeline_handle.id())
+                    .bind(&ctx.device, command_buffer);
 
-            ctx.device.cmd_bind_vertex_buffers(
-                command_buffer,
-                0,
-                std::slice::from_ref(&ctx.get_buffer_manager().get(self.vertex_buffer.id()).buffer),
-                &[0],
-            );
-            ctx.device.cmd_bind_index_buffer(
-                command_buffer,
-                ctx.get_buffer_manager().get(self.index_buffer.id()).buffer,
-                0,
-                vk::IndexType::UINT16,
-            );
-            ctx.device.cmd_draw_indexed(command_buffer, 3, 1, 0, 0, 1);
+                ctx.device.cmd_bind_vertex_buffers(
+                    command_buffer,
+                    0,
+                    std::slice::from_ref(
+                        &ctx.get_buffer_manager().get(self.vertex_buffer.id()).buffer,
+                    ),
+                    &[0],
+                );
+                ctx.device.cmd_bind_index_buffer(
+                    command_buffer,
+                    ctx.get_buffer_manager().get(self.index_buffer.id()).buffer,
+                    0,
+                    vk::IndexType::UINT16,
+                );
+                ctx.device.cmd_draw_indexed(command_buffer, 3, 1, 0, 0, 1);
 
-            ctx.end_rendering(command_buffer);
-        });
+                ctx.end_rendering(command_buffer);
+            },
+        );
 
         ctx.present_submit(present_index);
     }

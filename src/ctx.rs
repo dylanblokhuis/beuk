@@ -9,7 +9,7 @@ use ash::{
         khr::{DynamicRendering, Surface, Swapchain},
     },
     vk::{
-        CommandBuffer, DebugUtilsMessageSeverityFlagsEXT, ExtDescriptorIndexingFn,
+        CommandBuffer, DebugUtilsMessageSeverityFlagsEXT, ExtDescriptorIndexingFn, ImageView,
         KhrSamplerYcbcrConversionFn, PhysicalDeviceBufferDeviceAddressFeaturesKHR,
         PhysicalDeviceDescriptorIndexingFeatures, PhysicalDeviceSamplerYcbcrConversionFeatures,
         PresentModeKHR, SurfaceKHR, API_VERSION_1_2,
@@ -131,7 +131,7 @@ pub struct RenderContext {
 
     pub surface: vk::SurfaceKHR,
 
-    pub render_swapchain: RenderSwapchain,
+    pub render_swapchain: Arc<RwLock<RenderSwapchain>>,
 
     pub pool: vk::CommandPool,
     pub draw_command_buffer: vk::CommandBuffer,
@@ -411,7 +411,7 @@ impl RenderContext {
                 pdevice,
                 command_thread_pool,
                 threaded_command_buffers,
-                render_swapchain,
+                render_swapchain: Arc::new(RwLock::new(render_swapchain)),
                 buffer_manager: Arc::new(RwLock::new(buffer_manager)),
                 texture_manager: Arc::new(RwLock::new(texture_manager)),
                 pipeline_manager: Arc::new(RwLock::new(pipeline_manager)),
@@ -589,42 +589,47 @@ impl RenderContext {
 
     pub fn cleanup_swapchain(&self) {
         unsafe {
+            let render_swapchain = self.get_swapchain();
             self.device
-                .destroy_image_view(self.render_swapchain.depth_image_view, None);
+                .destroy_image_view(render_swapchain.depth_image_view, None);
             self.device
-                .free_memory(self.render_swapchain.depth_image_memory, None);
+                .free_memory(render_swapchain.depth_image_memory, None);
             self.device
-                .destroy_image(self.render_swapchain.depth_image, None);
+                .destroy_image(render_swapchain.depth_image, None);
 
-            for &image_view in self.render_swapchain.present_image_views.iter() {
+            for &image_view in render_swapchain.present_image_views.iter() {
                 self.device.destroy_image_view(image_view, None);
             }
-            self.render_swapchain
+            render_swapchain
                 .swapchain_loader
-                .destroy_swapchain(self.render_swapchain.swapchain, None);
+                .destroy_swapchain(render_swapchain.swapchain, None);
         }
     }
 
-    pub fn recreate_swapchain(&mut self) {
+    pub fn recreate_swapchain(&self) {
         unsafe {
             self.device
                 .device_wait_idle()
                 .expect("Failed to wait device idle!")
         };
         self.cleanup_swapchain();
-        let render_swapchain = Self::create_swapchain(
-            &self.instance,
-            &self.device,
-            self.pdevice,
-            &self.surface_loader,
-            self.surface,
-            self.render_swapchain.present_mode,
-        );
-        self.render_swapchain = render_swapchain;
+        let render_swapchain = {
+            let present_mode = self.get_swapchain().present_mode;
+            Self::create_swapchain(
+                &self.instance,
+                &self.device,
+                self.pdevice,
+                &self.surface_loader,
+                self.surface,
+                present_mode,
+            )
+        };
+        let surface_resolution = render_swapchain.surface_resolution;
+        *self.render_swapchain.write().unwrap() = render_swapchain;
         self.pipeline_manager
             .write()
             .unwrap()
-            .resize_all_graphics_pipelines(self.render_swapchain.surface_resolution);
+            .resize_all_graphics_pipelines(surface_resolution);
     }
 
     pub fn record(
@@ -685,7 +690,7 @@ impl RenderContext {
     }
 
     /// Submits the command buffer to the present queue with corresponding semaphores and waits for it to finish.
-    pub fn present_submit(&mut self, present_index: u32) {
+    pub fn present_submit(&self, present_index: u32) {
         let submit_info = vk::SubmitInfo::default()
             .wait_semaphores(std::slice::from_ref(&self.present_complete_semaphore))
             .wait_dst_stage_mask(&[vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT])
@@ -702,7 +707,7 @@ impl RenderContext {
             self.device.queue_wait_idle(self.present_queue).unwrap();
 
             let wait_semaphors = [self.rendering_complete_semaphore];
-            let swapchains = [self.render_swapchain.swapchain];
+            let swapchains = [self.get_swapchain().swapchain];
             let image_indices = [present_index];
             let present_info = vk::PresentInfoKHR::default()
                 .wait_semaphores(&wait_semaphors)
@@ -710,7 +715,7 @@ impl RenderContext {
                 .image_indices(&image_indices);
 
             let result = self
-                .render_swapchain
+                .get_swapchain()
                 .swapchain_loader
                 .queue_present(self.present_queue, &present_info);
 
@@ -730,10 +735,12 @@ impl RenderContext {
 
     pub fn acquire_present_index(&self) -> u32 {
         unsafe {
-            self.render_swapchain
+            let render_swapchain = self.render_swapchain.read().unwrap();
+
+            render_swapchain
                 .swapchain_loader
                 .acquire_next_image(
-                    self.render_swapchain.swapchain,
+                    render_swapchain.swapchain,
                     std::u64::MAX,
                     self.present_complete_semaphore,
                     vk::Fence::null(),
@@ -744,7 +751,7 @@ impl RenderContext {
     }
 
     /// Acquires the next image, transitions the image from the swapchain and records the draw command buffer. Returns the present_index
-    pub fn present_record<F: FnOnce(&Self, vk::CommandBuffer, u32)>(
+    pub fn present_record<F: FnOnce(&Self, vk::CommandBuffer, ImageView, ImageView)>(
         &self,
         present_index: u32,
         f: F,
@@ -753,8 +760,9 @@ impl RenderContext {
             self.draw_command_buffer,
             self.draw_commands_reuse_fence,
             |ctx, command_buffer| unsafe {
+                let render_swapchain = ctx.get_swapchain();
                 let layout_transition_barriers = vk::ImageMemoryBarrier::default()
-                    .image(self.render_swapchain.present_images[present_index as usize])
+                    .image(render_swapchain.present_images[present_index as usize])
                     .src_access_mask(vk::AccessFlags::COLOR_ATTACHMENT_READ)
                     .dst_access_mask(vk::AccessFlags::COLOR_ATTACHMENT_WRITE)
                     .old_layout(vk::ImageLayout::UNDEFINED)
@@ -776,10 +784,14 @@ impl RenderContext {
                     &[layout_transition_barriers],
                 );
 
-                f(ctx, command_buffer, present_index);
+                let present_image_view =
+                    render_swapchain.present_image_views[present_index as usize];
+                let depth_image_view = render_swapchain.depth_image_view;
+
+                f(ctx, command_buffer, present_image_view, depth_image_view);
 
                 let layout_transition_barriers = vk::ImageMemoryBarrier::default()
-                    .image(self.render_swapchain.present_images[present_index as usize])
+                    .image(render_swapchain.present_images[present_index as usize])
                     .src_access_mask(vk::AccessFlags::COLOR_ATTACHMENT_WRITE)
                     .dst_access_mask(vk::AccessFlags::COLOR_ATTACHMENT_READ)
                     .old_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
@@ -846,9 +858,10 @@ impl RenderContext {
             Some(depth_attachment) => Some(depth_attachment),
             None => Some(&depth_fallback),
         };
+        let surface_resolution = self.render_swapchain.read().unwrap().surface_resolution;
         let render_pass_begin_info = vk::RenderingInfo::default()
             // .flags(vk::RenderingFlags::CONTENTS_SECONDARY_COMMAND_BUFFERS)
-            .render_area(self.render_swapchain.surface_resolution.into())
+            .render_area(surface_resolution.into())
             .layer_count(1)
             .color_attachments(color_attachments)
             .depth_attachment(depth_attachment.as_ref().unwrap());
@@ -1174,6 +1187,7 @@ impl RenderContext {
         TextureHandle::new(id, self.texture_manager.clone())
     }
 
+    /// Creates or gets (if already created) a texture view, which can be cloned cheaply.
     pub fn get_texture_view(&self, texture: &TextureHandle) -> Arc<vk::ImageView> {
         let mut manager = self.texture_manager.write().unwrap();
         let texture = manager.get_mut(texture.id());
@@ -1182,13 +1196,19 @@ impl RenderContext {
 
     pub fn create_graphics_pipeline(&self, desc: &GraphicsPipelineDescriptor) -> PipelineHandle {
         let mut manager = self.pipeline_manager.write().unwrap();
-        let id = manager.create_graphics_pipeline(&desc);
+        let id = manager.create_graphics_pipeline(desc);
         drop(manager);
         PipelineHandle::new(id, self.pipeline_manager.clone())
     }
 
+    /// Returns a read lock to the pipeline manager.
     pub fn get_pipeline_manager(&self) -> std::sync::RwLockReadGuard<PipelineManager> {
         self.pipeline_manager.read().unwrap()
+    }
+
+    /// Returns a read lock to the render swapchain.
+    pub fn get_swapchain(&self) -> std::sync::RwLockReadGuard<RenderSwapchain> {
+        self.render_swapchain.read().unwrap()
     }
 }
 
