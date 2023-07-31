@@ -67,6 +67,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "fc7eb209b1518d6bb87b283c20095f5228ecda460da70b44f0802523dea6da04"
 
 [[package]]
+name = "anyhow"
+version = "1.0.72"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3b13c32d80ecc7ab747b80c3784bce54ee8a7a0cc4fbda9bf4cda2cf6fe90854"
+
+[[package]]
 name = "arrayref"
 version = "0.3.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -121,10 +127,14 @@ dependencies = [
 name = "beuk"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "arrayvec",
  "ash",
  "ash-window",
+ "boxcar",
  "bytemuck",
+ "crossbeam-channel",
+ "crossbeam-queue",
  "gpu-allocator",
  "image",
  "log",
@@ -183,6 +193,12 @@ dependencies = [
  "block-sys",
  "objc2-encode",
 ]
+
+[[package]]
+name = "boxcar"
+version = "0.2.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "15eb6c5519d345ae176d28597327b4db78b51606cd13ed9a11929dc3529526cd"
 
 [[package]]
 name = "bumpalo"
@@ -389,6 +405,16 @@ dependencies = [
  "crossbeam-utils",
  "memoffset 0.9.0",
  "scopeguard",
+]
+
+[[package]]
+name = "crossbeam-queue"
+version = "0.3.8"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d1cfb3ea8a53f37c40dea2c7bedcbd88bdfae54f5e2175d6ecaff1c988353add"
+dependencies = [
+ "cfg-if",
+ "crossbeam-utils",
 ]
 
 [[package]]

@@ -1,10 +1,11 @@
 use beuk::ash::vk::{self, BufferUsageFlags, PipelineVertexInputStateCreateInfo};
 use beuk::ctx::{RenderContextDescriptor, SamplerDesc};
 use beuk::memory::{BufferDescriptor, MemoryLocation};
+use beuk::memory2::BufferHandle;
 use beuk::pipeline::BlendState;
 use beuk::{
     ctx::RenderContext,
-    memory::{BufferHandle, PipelineHandle},
+    memory::PipelineHandle,
     pipeline::{GraphicsPipelineDescriptor, PrimitiveState},
     shaders::Shader,
 };
@@ -263,16 +264,23 @@ impl Canvas {
                     .get_graphics_pipeline(&self.pipeline_handle.id())
                     .bind(&ctx.device, command_buffer);
 
-                let manager = ctx.get_buffer_manager();
                 ctx.device.cmd_bind_vertex_buffers(
                     command_buffer,
                     0,
-                    std::slice::from_ref(&manager.get(self.vertex_buffer.id()).buffer),
+                    std::slice::from_ref(
+                        &ctx.buffer_manager
+                            .get(self.vertex_buffer.id())
+                            .unwrap()
+                            .buffer(),
+                    ),
                     &[0],
                 );
                 ctx.device.cmd_bind_index_buffer(
                     command_buffer,
-                    manager.get(self.index_buffer.id()).buffer(),
+                    ctx.buffer_manager
+                        .get(self.index_buffer.id())
+                        .unwrap()
+                        .buffer(),
                     0,
                     vk::IndexType::UINT32,
                 );

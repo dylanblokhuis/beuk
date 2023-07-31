@@ -4,7 +4,7 @@ use gpu_allocator::{
     MemoryLocation,
 };
 
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct Buffer {
     pub buffer: vk::Buffer,
     pub size: u64,

@@ -27,9 +27,10 @@ use std::{os::raw::c_char, sync::Arc};
 
 use crate::{
     memory::{
-        BufferDescriptor, BufferHandle, BufferManager, MemoryLocation, PipelineHandle,
-        PipelineManager, TextureHandle, TextureManager,
+        BufferDescriptor, MemoryLocation, PipelineHandle, PipelineManager, TextureHandle,
+        TextureManager,
     },
+    memory2::{BufferHandle, ResourceManager},
     pipeline::GraphicsPipelineDescriptor,
 };
 
@@ -121,7 +122,7 @@ pub struct RenderContext {
     pub max_descriptor_count: u32,
     pub command_thread_pool: ThreadPool,
     pub threaded_command_buffers: Arc<RwLock<HashMap<usize, CommandBuffer>>>,
-    pub buffer_manager: Arc<RwLock<BufferManager>>,
+    pub buffer_manager: Arc<ResourceManager>,
     pub texture_manager: Arc<RwLock<TextureManager>>,
     pub pipeline_manager: Arc<RwLock<PipelineManager>>,
 
@@ -371,8 +372,8 @@ impl RenderContext {
                 Self::create_command_thread_pool(device.clone(), queue_family_index);
 
             let dynamic_rendering = DynamicRendering::new(&instance, &device);
-            let buffer_manager = BufferManager::new(
-                device.clone(),
+            let buffer_manager = ResourceManager::new(
+                Arc::new(device.clone()),
                 Allocator::new(&AllocatorCreateDesc {
                     instance: instance.clone(),
                     device: device.clone(),
@@ -412,7 +413,7 @@ impl RenderContext {
                 command_thread_pool,
                 threaded_command_buffers,
                 render_swapchain: Arc::new(RwLock::new(render_swapchain)),
-                buffer_manager: Arc::new(RwLock::new(buffer_manager)),
+                buffer_manager: Arc::new(buffer_manager),
                 texture_manager: Arc::new(RwLock::new(texture_manager)),
                 pipeline_manager: Arc::new(RwLock::new(pipeline_manager)),
                 // TODO: fetch from device
@@ -1008,7 +1009,7 @@ impl RenderContext {
 
                 ctx.device.cmd_copy_buffer_to_image(
                     command_buffer,
-                    ctx.get_buffer_manager().get(buffer.id()).buffer(),
+                    ctx.buffer_manager.get(buffer.id()).unwrap().buffer(),
                     texture.image,
                     vk::ImageLayout::TRANSFER_DST_OPTIMAL,
                     &[vk::BufferImageCopy::default()
@@ -1096,14 +1097,14 @@ impl RenderContext {
     // }
 
     /// Returns a read lock to the buffer manager.
-    pub fn get_buffer_manager(&self) -> std::sync::RwLockReadGuard<BufferManager> {
-        self.buffer_manager.read().unwrap()
-    }
+    // pub fn get_buffer_manager(&self) -> std::sync::RwLockReadGuard<BufferManager> {
+    //     self.buffer_manager
+    // }
 
-    /// Returns a write lock to the buffer manager.
-    pub fn get_buffer_manager_mut(&self) -> std::sync::RwLockWriteGuard<BufferManager> {
-        self.buffer_manager.write().unwrap()
-    }
+    // /// Returns a write lock to the buffer manager.
+    // pub fn get_buffer_manager_mut(&self) -> std::sync::RwLockWriteGuard<BufferManager> {
+    //     self.buffer_manager.write().unwrap()
+    // }
 
     /// Returns a read lock to the buffer manager.
     pub fn get_texture_manager(&self) -> std::sync::RwLockReadGuard<TextureManager> {
@@ -1116,10 +1117,7 @@ impl RenderContext {
     }
 
     pub fn create_buffer(&self, desc: &BufferDescriptor) -> BufferHandle {
-        let mut manager = self.buffer_manager.write().unwrap();
-        let id = manager.create_buffer(desc);
-        drop(manager);
-
+        let id = self.buffer_manager.create(desc);
         BufferHandle::new(id, self.buffer_manager.clone())
     }
 
@@ -1136,29 +1134,26 @@ impl RenderContext {
         if desc.size == 0 {
             desc.size = (data.len() - offset) as u64;
         }
-        let id = self.get_buffer_manager_mut().create_buffer(&desc);
-        let mut handle = BufferHandle::new(id, self.buffer_manager.clone());
+        let id = self.buffer_manager.create(&desc);
+        let handle = BufferHandle::new(id, self.buffer_manager.clone());
 
         if desc.location == MemoryLocation::GpuOnly {
-            let staging_buffer_id =
-                self.get_buffer_manager_mut()
-                    .create_buffer(&BufferDescriptor {
-                        size: desc.size,
-                        usage: vk::BufferUsageFlags::TRANSFER_SRC,
-                        location: MemoryLocation::CpuToGpu,
-                        debug_name: "Staging buffer",
-                    });
-            let mut staging_handle =
-                BufferHandle::new(staging_buffer_id, self.buffer_manager.clone());
-            staging_handle.set(data, offset);
+            let staging_buffer_id = self.buffer_manager.create(&BufferDescriptor {
+                size: desc.size,
+                usage: vk::BufferUsageFlags::TRANSFER_SRC,
+                location: MemoryLocation::CpuToGpu,
+                debug_name: "Staging buffer",
+            });
+            let staging_handle = BufferHandle::new(staging_buffer_id, self.buffer_manager.clone());
+            let staging_buffer = self.buffer_manager.get_mut(staging_handle.id()).unwrap();
+            staging_buffer.copy_from_slice(data, offset);
 
             self.record(
                 self.setup_command_buffer,
                 self.setup_commands_reuse_fence,
                 |ctx, command_buffer| unsafe {
-                    let buf_mngr = self.get_buffer_manager();
-                    let staging_buffer = buf_mngr.get(staging_handle.id());
-                    let buffer = buf_mngr.get(handle.id());
+                    let staging_buffer = self.buffer_manager.get(staging_handle.id()).unwrap();
+                    let buffer = self.buffer_manager.get(handle.id()).unwrap();
                     ctx.device.cmd_copy_buffer(
                         command_buffer,
                         staging_buffer.buffer(),
@@ -1173,7 +1168,10 @@ impl RenderContext {
             );
             self.submit(&self.setup_command_buffer, self.setup_commands_reuse_fence);
         } else {
-            handle.set(data, offset);
+            self.buffer_manager
+                .get_mut(handle.id())
+                .unwrap()
+                .copy_from_slice(data, offset);
         }
 
         handle.clone()
@@ -1251,7 +1249,7 @@ impl Drop for RenderContext {
             log::debug!("Dropping pipeline manager");
             self.pipeline_manager.write().unwrap().clear();
             log::debug!("Dropping buffer manager");
-            self.get_buffer_manager_mut().clear();
+            // self.buffer_manager.clear();
             log::debug!("Dropping texture manager");
             self.get_texture_manager_mut().clear();
 

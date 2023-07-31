@@ -1,14 +1,16 @@
 use beuk::ash::vk::{self, BufferUsageFlags, PipelineVertexInputStateCreateInfo};
 use beuk::ctx::RenderContextDescriptor;
 use beuk::memory::BufferDescriptor;
+use beuk::memory2::BufferHandle;
 use beuk::pipeline::BlendState;
 use beuk::{
     ctx::RenderContext,
-    memory::{BufferHandle, PipelineHandle},
+    memory::PipelineHandle,
     pipeline::{GraphicsPipelineDescriptor, PrimitiveState},
     shaders::Shader,
 };
 use raw_window_handle::{HasRawDisplayHandle, HasRawWindowHandle};
+use std::sync::Arc;
 use winit::{
     event::{Event, WindowEvent},
     event_loop::EventLoop,
@@ -16,12 +18,12 @@ use winit::{
 };
 
 fn main() {
-    simple_logger::SimpleLogger::new().init().unwrap();
-    use tracing_subscriber::layer::SubscriberExt;
-    tracing::subscriber::set_global_default(
-        tracing_subscriber::registry().with(tracing_tracy::TracyLayer::new()),
-    )
-    .expect("set up the subscriber");
+    // simple_logger::SimpleLogger::new().init().unwrap();
+    // use tracing_subscriber::layer::SubscriberExt;
+    // tracing::subscriber::set_global_default(
+    //     tracing_subscriber::registry().with(tracing_tracy::TracyLayer::new()),
+    // )
+    // .expect("set up the subscriber");
 
     let event_loop = EventLoop::new();
 
@@ -31,10 +33,32 @@ fn main() {
         .build(&event_loop)
         .unwrap();
 
-    let ctx = beuk::ctx::RenderContext::new(RenderContextDescriptor {
+    let ctx = Arc::new(beuk::ctx::RenderContext::new(RenderContextDescriptor {
         display_handle: window.raw_display_handle(),
         window_handle: window.raw_window_handle(),
         present_mode: vk::PresentModeKHR::default(),
+    }));
+
+    // let (tx, rx) = crossbeam_channel::bounded(1);
+
+    let ctx2 = ctx.clone();
+    std::thread::spawn(move || {
+        let mut handles = vec![];
+        loop {
+            std::thread::sleep(std::time::Duration::from_millis(100));
+            let handle = ctx2.as_ref().create_buffer(&BufferDescriptor {
+                debug_name: "something",
+                size: 100_000_00,
+                usage: BufferUsageFlags::STORAGE_BUFFER,
+                location: gpu_allocator::MemoryLocation::CpuToGpu,
+            });
+
+            if handles.len() > 100 {
+                break;
+            }
+
+            handles.push(handle);
+        }
     });
 
     let canvas = Canvas::new(&ctx);
@@ -49,6 +73,7 @@ fn main() {
             window.request_redraw();
         }
         Event::RedrawRequested(_) => {
+            // tx.send(()).unwrap();
             canvas.draw(&ctx);
         }
         _ => (),
@@ -199,16 +224,18 @@ impl Canvas {
                     command_buffer,
                     0,
                     std::slice::from_ref(
-                        &ctx.get_buffer_manager()
+                        &ctx.buffer_manager
                             .get(self.vertex_buffer.id())
+                            .unwrap()
                             .buffer(),
                     ),
                     &[0],
                 );
                 ctx.device.cmd_bind_index_buffer(
                     command_buffer,
-                    ctx.get_buffer_manager()
+                    ctx.buffer_manager
                         .get(self.index_buffer.id())
+                        .unwrap()
                         .buffer(),
                     0,
                     vk::IndexType::UINT16,
