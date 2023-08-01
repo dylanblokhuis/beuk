@@ -1184,9 +1184,12 @@ impl RenderContext {
     }
 
     /// Creates or gets (if already created) a texture view, which can be cloned cheaply.
-    pub fn get_texture_view(&self, texture: &ResourceHandle<Texture>) -> Arc<vk::ImageView> {
-        let texture = self.texture_manager.get_mut(texture.id()).unwrap();
-        texture.create_view(&self.device)
+    pub fn get_texture_view(
+        &self,
+        texture: &ResourceHandle<Texture>,
+    ) -> Option<Arc<vk::ImageView>> {
+        let texture = self.texture_manager.get_mut(texture.id())?;
+        Some(texture.create_view(&self.device))
     }
 
     pub fn create_graphics_pipeline(&self, desc: &GraphicsPipelineDescriptor) -> PipelineHandle {

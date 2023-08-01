@@ -199,7 +199,7 @@ impl Canvas {
             0,
         );
         ctx.copy_buffer_to_texture(&buffer_handle, &texture_handle);
-        let view = ctx.get_texture_view(&texture_handle);
+        let view = ctx.get_texture_view(&texture_handle).unwrap();
 
         unsafe {
             let pipelines = ctx.get_pipeline_manager();
