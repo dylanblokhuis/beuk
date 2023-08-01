@@ -176,11 +176,11 @@ impl ResourceManager {
         let Some(cell) = resource else {
             return Err(anyhow!("No resource at index {:?}", handle.index));
         };
-
         let data = unsafe { &mut *cell.0.get() };
 
         if handle.generation != data.generation {
-            return Err(anyhow!("Generation mismatch"));
+            // its OK to destroy a handle thats no longer valid, since it has already been destroyed.
+            return Ok(());
         }
         data.retain_count -= 1;
         if data.retain_count > 0 {
