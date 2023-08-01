@@ -97,7 +97,10 @@ impl Texture {
         if let Some(view) = self.view.take() {
             unsafe { device.destroy_image_view(*view, None) };
         }
-        allocator.free(self.allocation.take().unwrap()).unwrap();
+        let Some(allocation) = self.allocation.take() else {
+            return;
+        };
+        allocator.free(allocation).unwrap();
         unsafe { device.destroy_image(self.image, None) };
     }
 

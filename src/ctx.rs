@@ -19,18 +19,18 @@ use ash::{vk, Entry};
 use ash::{Device, Instance};
 use gpu_allocator::vulkan::{Allocator, AllocatorCreateDesc};
 use rayon::ThreadPool;
-use std::{ffi::CStr, sync::Mutex};
-use std::{borrow::Cow, collections::HashMap};
+use std::{borrow::Cow, collections::HashMap, mem::ManuallyDrop};
 use std::{cell::RefCell, default::Default};
+use std::{ffi::CStr, sync::Mutex};
 use std::{ops::Drop, sync::RwLock};
 use std::{os::raw::c_char, sync::Arc};
 
 use crate::{
-    memory::{
-        BufferDescriptor, MemoryLocation, PipelineHandle, PipelineManager,
-    },
+    buffer::Buffer,
+    memory::{BufferDescriptor, MemoryLocation, PipelineHandle, PipelineManager},
     memory2::{ResourceHandle, ResourceManager},
-    pipeline::GraphicsPipelineDescriptor, buffer::Buffer, texture::Texture,
+    pipeline::GraphicsPipelineDescriptor,
+    texture::Texture,
 };
 
 pub const RESERVED_DESCRIPTOR_COUNT: u32 = 32;
@@ -111,6 +111,7 @@ thread_local! {
 }
 
 pub struct RenderContext {
+    pub allocator: Arc<Mutex<Allocator>>,
     pub entry: Entry,
     pub instance: Instance,
     pub device: Device,
@@ -124,7 +125,6 @@ pub struct RenderContext {
     pub buffer_manager: Arc<ResourceManager<Buffer>>,
     pub texture_manager: Arc<ResourceManager<Texture>>,
     pub pipeline_manager: Arc<RwLock<PipelineManager>>,
-    pub allocator: Arc<Mutex<Allocator>>,
 
     pub pdevice: vk::PhysicalDevice,
     pub queue_family_index: u32,
@@ -373,22 +373,20 @@ impl RenderContext {
 
             let dynamic_rendering = DynamicRendering::new(&instance, &device);
 
-            let allocator = Arc::new(Mutex::new(Allocator::new(
-                &AllocatorCreateDesc {
+            let allocator = Arc::new(Mutex::new(
+                Allocator::new(&AllocatorCreateDesc {
                     instance: instance.clone(),
                     device: device.clone(),
                     physical_device: pdevice,
                     debug_settings: Default::default(),
-                    buffer_device_address: false, // Ideally, check the BufferDeviceAddressFeatures struct.
+                    buffer_device_address: true,
                     allocation_sizes: Default::default(),
-                },
-            ).unwrap()));
+                })
+                .unwrap(),
+            ));
             let arc_device = Arc::new(device.clone());
             let buffer_manager = ResourceManager::new(arc_device.clone(), allocator.clone());
-            let texture_manager = ResourceManager::new(
-                arc_device.clone(),
-                allocator.clone(),
-            );
+            let texture_manager = ResourceManager::new(arc_device.clone(), allocator.clone());
 
             let pipeline_manager = PipelineManager::new(
                 device.clone(),
@@ -397,6 +395,7 @@ impl RenderContext {
             );
 
             Self {
+                allocator,
                 entry,
                 instance,
                 device,
@@ -409,7 +408,6 @@ impl RenderContext {
                 buffer_manager: Arc::new(buffer_manager),
                 texture_manager: Arc::new(texture_manager),
                 pipeline_manager: Arc::new(RwLock::new(pipeline_manager)),
-                allocator,
                 // TODO: fetch from device
                 max_descriptor_count: {
                     (512 * 1024).min(
@@ -967,7 +965,11 @@ impl RenderContext {
     }
 
     #[tracing::instrument(skip(self))]
-    pub fn copy_buffer_to_texture(&self, buffer: &ResourceHandle<Buffer>, texture: &ResourceHandle<Texture>) {
+    pub fn copy_buffer_to_texture(
+        &self,
+        buffer: &ResourceHandle<Buffer>,
+        texture: &ResourceHandle<Texture>,
+    ) {
         self.record(
             self.setup_command_buffer,
             self.setup_commands_reuse_fence,
@@ -1106,7 +1108,7 @@ impl RenderContext {
             desc.debug_name,
             desc.size,
             desc.usage,
-            desc.location
+            desc.location,
         );
         let id = self.buffer_manager.create(buffer);
         ResourceHandle::new(id, self.buffer_manager.clone())
@@ -1125,7 +1127,7 @@ impl RenderContext {
         if desc.size == 0 {
             desc.size = (data.len() - offset) as u64;
         }
-        
+
         let handle = self.create_buffer(&desc);
         if desc.location == MemoryLocation::GpuOnly {
             let staging_handle = self.create_buffer(&BufferDescriptor {
@@ -1171,7 +1173,12 @@ impl RenderContext {
         debug_name: &str,
         create_info: &vk::ImageCreateInfo,
     ) -> ResourceHandle<Texture> {
-        let texture = Texture::new(&self.device, &mut self.allocator.lock().unwrap(), debug_name, create_info);
+        let texture = Texture::new(
+            &self.device,
+            &mut self.allocator.lock().unwrap(),
+            debug_name,
+            create_info,
+        );
         let id = self.texture_manager.create(texture);
         ResourceHandle::new(id, self.texture_manager.clone())
     }
@@ -1205,7 +1212,6 @@ impl Drop for RenderContext {
         unsafe {
             self.device.device_wait_idle().unwrap();
 
-            log::debug!("Dropping semaphores and fences");
             self.device
                 .destroy_semaphore(self.present_complete_semaphore, None);
             self.device
@@ -1215,10 +1221,8 @@ impl Drop for RenderContext {
             self.device
                 .destroy_fence(self.setup_commands_reuse_fence, None);
 
-            log::debug!("Dropping swapchain");
             self.cleanup_swapchain();
 
-            log::debug!("Dropping command pools");
             self.command_thread_pool.broadcast(|ctx| {
                 COMMAND_POOL.with(|pool| {
                     let pool = pool.take();
@@ -1232,12 +1236,9 @@ impl Drop for RenderContext {
                 });
             });
 
-            log::debug!("Dropping pipeline manager");
             self.pipeline_manager.write().unwrap().clear();
-            log::debug!("Dropping buffer manager");
-            // self.buffer_manager.clear();
-            log::debug!("Dropping texture manager");
-            // self.get_texture_manager_mut().clear();
+            self.buffer_manager.clear_all();
+            self.texture_manager.clear_all();
 
             self.device.destroy_command_pool(self.pool, None);
             self.device.destroy_device(None);

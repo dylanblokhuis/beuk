@@ -82,7 +82,7 @@ impl Shader {
         shader_info: &ImmutableShaderInfo,
         descriptor_set_layouts: &[vk::DescriptorSetLayout],
         set_layout_info: &[HashMap<u32, vk::DescriptorType>],
-    ) -> Vec<vk::DescriptorSet> {
+    ) -> (Vec<vk::DescriptorSet>, vk::DescriptorPool) {
         let mut descriptor_pool_sizes: Vec<vk::DescriptorPoolSize> = Vec::new();
         for bindings in set_layout_info.iter() {
             for ty in bindings.values() {
@@ -111,7 +111,10 @@ impl Shader {
             .descriptor_pool(descriptor_pool)
             .set_layouts(descriptor_set_layouts);
 
-        unsafe { device.allocate_descriptor_sets(&desc_alloc_info).unwrap() }
+        (
+            unsafe { device.allocate_descriptor_sets(&desc_alloc_info).unwrap() },
+            descriptor_pool,
+        )
     }
 
     // pub fn ext_shader_create_info(&self) -> ShaderCreateInfoEXT {

@@ -22,7 +22,6 @@ pub struct BufferDescriptor {
     pub location: MemoryLocation,
 }
 
-
 impl Default for BufferDescriptor {
     fn default() -> Self {
         Self {
@@ -290,15 +289,6 @@ impl PipelineManager {
     }
 
     pub fn clear(&mut self) {
-        for (_, pipeline) in self.graphics_pipelines.iter() {
-            pipeline.destroy(&self.device);
-        }
-        self.graphics_pipelines.clear();
-    }
-}
-
-impl Drop for PipelineManager {
-    fn drop(&mut self) {
         unsafe {
             for sampler in self.immutable_shader_info.immutable_samplers.values() {
                 self.device.destroy_sampler(*sampler, None);
@@ -309,6 +299,15 @@ impl Drop for PipelineManager {
             }
         }
 
+        for (_, pipeline) in self.graphics_pipelines.iter() {
+            pipeline.destroy(&self.device);
+        }
+        self.graphics_pipelines.clear();
+    }
+}
+
+impl Drop for PipelineManager {
+    fn drop(&mut self) {
         self.clear();
     }
 }

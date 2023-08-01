@@ -40,28 +40,6 @@ fn main() {
         present_mode: vk::PresentModeKHR::default(),
     }));
 
-    // let (tx, rx) = crossbeam_channel::bounded(1);
-
-    let ctx2 = ctx.clone();
-    std::thread::spawn(move || {
-        let mut handles = vec![];
-        loop {
-            std::thread::sleep(std::time::Duration::from_millis(100));
-            let handle = ctx2.as_ref().create_buffer(&BufferDescriptor {
-                debug_name: "something",
-                size: 100_000_00,
-                usage: BufferUsageFlags::STORAGE_BUFFER,
-                location: gpu_allocator::MemoryLocation::CpuToGpu,
-            });
-
-            if handles.len() > 100 {
-                break;
-            }
-
-            handles.push(handle);
-        }
-    });
-
     let canvas = Canvas::new(&ctx);
 
     event_loop.run(move |event, _, control_flow| match event {

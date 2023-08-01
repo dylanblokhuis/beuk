@@ -87,10 +87,7 @@ impl<T: Debug> Debug for ResourceManager<T> {
 }
 
 impl<T: Default + Debug + ResourceCleanup> ResourceManager<T> {
-    pub fn new(
-        device: Arc<ash::Device>,
-        allocator: Arc<Mutex<Allocator>>,
-    ) -> Self {
+    pub fn new(device: Arc<ash::Device>, allocator: Arc<Mutex<Allocator>>) -> Self {
         let queue = ArrayQueue::new(1024);
         let resources = Arc::new(boxcar::Vec::with_capacity(1024));
         for i in 0..1024 {
@@ -106,7 +103,7 @@ impl<T: Default + Debug + ResourceCleanup> ResourceManager<T> {
             resources,
             free_indices: queue,
             device,
-            allocator
+            allocator,
         }
     }
 
@@ -147,7 +144,7 @@ impl<T: Default + Debug + ResourceCleanup> ResourceManager<T> {
         };
 
         println!("creating {:?}", index);
-       
+
         let old_generation = unsafe { &*self.resources[index].0.get() }.generation;
         let new_generation = old_generation + 1;
 
@@ -182,9 +179,19 @@ impl<T: Default + Debug + ResourceCleanup> ResourceManager<T> {
             return Ok(());
         }
 
-        data.inner.cleanup(self.device.clone(), self.allocator.clone());
-    
+        data.inner
+            .cleanup(self.device.clone(), self.allocator.clone());
+
         let _ = self.free_indices.force_push(handle.index);
         Ok(())
+    }
+
+    pub fn clear_all(&self) {
+        for (_, resource) in self.resources.iter() {
+            let data = unsafe { &mut *resource.0.get() };
+            data.inner
+                .cleanup(self.device.clone(), self.allocator.clone());
+            data.inner = Default::default();
+        }
     }
 }

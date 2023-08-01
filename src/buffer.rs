@@ -18,7 +18,11 @@ pub struct Buffer {
 }
 
 impl ResourceCleanup for Buffer {
-    fn cleanup(&mut self, device: Arc<ash::Device>, allocator: std::sync::Arc<std::sync::Mutex<Allocator>>) {
+    fn cleanup(
+        &mut self,
+        device: Arc<ash::Device>,
+        allocator: std::sync::Arc<std::sync::Mutex<Allocator>>,
+    ) {
         self.destroy(&device, &mut allocator.lock().unwrap());
     }
 }
@@ -86,7 +90,10 @@ impl Buffer {
     }
 
     pub fn destroy(&mut self, device: &ash::Device, allocator: &mut Allocator) {
-        allocator.free(self.allocation.take().unwrap()).unwrap();
+        let Some(allocation) = self.allocation.take() else {
+            return;
+        };
+        allocator.free(allocation).unwrap();
         unsafe { device.destroy_buffer(self.buffer, None) };
     }
 

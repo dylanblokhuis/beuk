@@ -526,6 +526,7 @@ pub struct GraphicsPipeline {
     pub layout: vk::PipelineLayout,
     pub descriptor_sets: Vec<vk::DescriptorSet>,
     pub descriptor_set_layouts: Vec<vk::DescriptorSetLayout>,
+    pub descriptor_pool: vk::DescriptorPool,
     pub set_layout_info: Vec<HashMap<u32, DescriptorType>>,
     pub color_attachments: Vec<vk::Format>,
     pub depth_attachment: vk::Format,
@@ -712,7 +713,7 @@ impl GraphicsPipeline {
                 .unwrap()[0]
         };
 
-        let descriptor_sets = if !set_layout_info.is_empty() {
+        let (descriptor_sets, descriptor_pool) = if !set_layout_info.is_empty() {
             desc.fragment_shader.create_descriptor_sets(
                 device,
                 shader_info,
@@ -720,7 +721,7 @@ impl GraphicsPipeline {
                 &set_layout_info,
             )
         } else {
-            vec![]
+            (vec![], vk::DescriptorPool::null())
         };
 
         Self {
@@ -735,6 +736,7 @@ impl GraphicsPipeline {
             scissors,
             vertex_shader: desc.vertex_shader.clone(),
             fragment_shader: desc.fragment_shader.clone(),
+            descriptor_pool,
         }
     }
 
@@ -768,6 +770,10 @@ impl GraphicsPipeline {
             device.destroy_shader_module(self.vertex_shader.module, None);
             device.destroy_shader_module(self.fragment_shader.module, None);
 
+            device
+                .free_descriptor_sets(self.descriptor_pool, &self.descriptor_sets)
+                .unwrap();
+            device.destroy_descriptor_pool(self.descriptor_pool, None);
             for layout in self.descriptor_set_layouts.iter() {
                 device.destroy_descriptor_set_layout(*layout, None);
             }
