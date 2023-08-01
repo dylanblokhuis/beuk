@@ -6,47 +6,50 @@ use std::{
 
 use anyhow::{anyhow, Result};
 use crossbeam_queue::ArrayQueue;
-
-use crate::{buffer::Buffer, memory::BufferDescriptor};
+use gpu_allocator::vulkan::Allocator;
 
 pub type Generation = usize;
 pub type Index = usize;
 
-struct Resource {
-    buffer: Buffer,
+struct Resource<T> {
+    inner: T,
     generation: Generation,
     retain_count: usize,
 }
 
 #[derive(Debug)]
-struct ResourceInner(UnsafeCell<Resource>);
-unsafe impl Send for ResourceInner {}
-unsafe impl Sync for ResourceInner {}
+struct ResourceInner<T>(UnsafeCell<Resource<T>>);
+unsafe impl<T> Send for ResourceInner<T> {}
+unsafe impl<T> Sync for ResourceInner<T> {}
 
-#[derive(Debug)]
-pub struct BufferHandle {
-    id: BufferId,
-    manager: Arc<ResourceManager>,
+pub trait ResourceCleanup {
+    fn cleanup(&mut self, device: Arc<ash::Device>, allocator: Arc<Mutex<Allocator>>);
 }
 
-impl BufferHandle {
-    pub fn new(id: BufferId, manager: Arc<ResourceManager>) -> Self {
+#[derive(Debug)]
+pub struct ResourceHandle<T: Default + Debug + ResourceCleanup> {
+    id: ResourceId,
+    manager: Arc<ResourceManager<T>>,
+}
+
+impl<T: Default + Debug + ResourceCleanup> ResourceHandle<T> {
+    pub fn new(id: ResourceId, manager: Arc<ResourceManager<T>>) -> Self {
         Self { id, manager }
     }
 
     #[inline]
-    pub fn id(&self) -> BufferId {
+    pub fn id(&self) -> ResourceId {
         self.id
     }
 }
 
 #[derive(Debug, Clone, Copy)]
-pub struct BufferId {
+pub struct ResourceId {
     index: Index,
     generation: Generation,
 }
 
-impl Clone for BufferHandle {
+impl<T: Default + Debug + ResourceCleanup> Clone for ResourceHandle<T> {
     fn clone(&self) -> Self {
         let resource = unsafe { &mut *self.manager.resources[self.id.index].0.get() };
         if self.id.generation != resource.generation {
@@ -60,55 +63,54 @@ impl Clone for BufferHandle {
     }
 }
 
-impl Drop for BufferHandle {
+impl<T: Default + Debug + ResourceCleanup> Drop for ResourceHandle<T> {
     fn drop(&mut self) {
         self.manager.destroy(self.id).unwrap();
     }
 }
 
-pub struct ResourceManager {
-    resources: Arc<boxcar::Vec<ResourceInner>>,
+pub struct ResourceManager<T> {
+    resources: Arc<boxcar::Vec<ResourceInner<T>>>,
     free_indices: ArrayQueue<Index>,
     device: Arc<ash::Device>,
-    allocator: Arc<Mutex<gpu_allocator::vulkan::Allocator>>,
+    allocator: Arc<Mutex<Allocator>>,
 }
 
-unsafe impl Send for ResourceManager {}
-unsafe impl Sync for ResourceManager {}
-
-impl Debug for ResourceManager {
+impl<T: Debug> Debug for ResourceManager<T> {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ResourceManager")
             .field("resources", &self.resources)
             .field("free_indices", &self.free_indices)
-            .field("allocator", &self.allocator)
             .finish()
     }
 }
 
-impl ResourceManager {
-    pub fn new(device: Arc<ash::Device>, allocator: gpu_allocator::vulkan::Allocator) -> Self {
+impl<T: Default + Debug + ResourceCleanup> ResourceManager<T> {
+    pub fn new(
+        device: Arc<ash::Device>,
+        allocator: Arc<Mutex<Allocator>>,
+    ) -> Self {
         let queue = ArrayQueue::new(1024);
         let resources = Arc::new(boxcar::Vec::with_capacity(1024));
         for i in 0..1024 {
             queue.push(i).unwrap();
             resources.push(ResourceInner(UnsafeCell::new(Resource {
-                buffer: Buffer::default(),
+                inner: Default::default(),
                 generation: 0,
                 retain_count: 0,
             })));
         }
 
         Self {
-            device,
             resources,
             free_indices: queue,
-            allocator: Arc::new(Mutex::new(allocator)),
+            device,
+            allocator
         }
     }
 
     #[tracing::instrument(skip(self))]
-    pub fn get(&self, handle: BufferId) -> Option<&Buffer> {
+    pub fn get(&self, handle: ResourceId) -> Option<&T> {
         let resource = self.resources.get(handle.index);
         let Some(lock) = resource else {
             return None;
@@ -119,11 +121,11 @@ impl ResourceManager {
             return None;
         }
 
-        Some(&data.buffer)
+        Some(&data.inner)
     }
 
     #[tracing::instrument(skip(self))]
-    pub fn get_mut(&self, handle: BufferId) -> Option<&mut Buffer> {
+    pub fn get_mut(&self, handle: ResourceId) -> Option<&mut T> {
         let resource = self.resources.get(handle.index);
         let Some(lock) = resource else {
             return None;
@@ -134,44 +136,36 @@ impl ResourceManager {
             return None;
         }
 
-        Some(&mut data.buffer)
+        Some(&mut data.inner)
     }
 
     #[tracing::instrument(skip(self))]
-    pub fn create(&self, desc: &BufferDescriptor) -> BufferId {
+    pub fn create(&self, resource: T) -> ResourceId {
         let Some(index) = self.free_indices.pop() else {
             panic!("No more free indices");
         };
 
         println!("creating {:?}", index);
-
-        let buffer = Buffer::new(
-            &self.device,
-            &mut self.allocator.lock().unwrap(),
-            desc.debug_name,
-            desc.size,
-            desc.usage,
-            desc.location,
-        );
+       
         let old_generation = unsafe { &*self.resources[index].0.get() }.generation;
         let new_generation = old_generation + 1;
 
         unsafe {
             *self.resources[index].0.get() = Resource {
-                buffer,
+                inner: resource,
                 generation: new_generation,
                 retain_count: 1,
             }
         }
 
-        BufferId {
+        ResourceId {
             index,
             generation: new_generation,
         }
     }
 
     #[tracing::instrument(skip(self))]
-    pub fn destroy(&self, handle: BufferId) -> Result<()> {
+    pub fn destroy(&self, handle: ResourceId) -> Result<()> {
         let resource = self.resources.get(handle.index);
         let Some(cell) = resource else {
             return Err(anyhow!("No resource at index {:?}", handle.index));
@@ -187,9 +181,8 @@ impl ResourceManager {
             return Ok(());
         }
 
-        data.buffer
-            .destroy(&self.device, &mut self.allocator.lock().unwrap());
-
+        data.inner.cleanup(self.device.clone(), self.allocator.clone());
+    
         let _ = self.free_indices.force_push(handle.index);
         Ok(())
     }

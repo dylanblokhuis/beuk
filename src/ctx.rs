@@ -19,7 +19,7 @@ use ash::{vk, Entry};
 use ash::{Device, Instance};
 use gpu_allocator::vulkan::{Allocator, AllocatorCreateDesc};
 use rayon::ThreadPool;
-use std::ffi::CStr;
+use std::{ffi::CStr, sync::Mutex};
 use std::{borrow::Cow, collections::HashMap};
 use std::{cell::RefCell, default::Default};
 use std::{ops::Drop, sync::RwLock};
@@ -30,8 +30,8 @@ use crate::{
         BufferDescriptor, MemoryLocation, PipelineHandle, PipelineManager, TextureHandle,
         TextureManager,
     },
-    memory2::{BufferHandle, ResourceManager},
-    pipeline::GraphicsPipelineDescriptor,
+    memory2::{ResourceHandle, ResourceManager},
+    pipeline::GraphicsPipelineDescriptor, buffer::Buffer,
 };
 
 pub const RESERVED_DESCRIPTOR_COUNT: u32 = 32;
@@ -122,9 +122,10 @@ pub struct RenderContext {
     pub max_descriptor_count: u32,
     pub command_thread_pool: ThreadPool,
     pub threaded_command_buffers: Arc<RwLock<HashMap<usize, CommandBuffer>>>,
-    pub buffer_manager: Arc<ResourceManager>,
+    pub buffer_manager: Arc<ResourceManager<Buffer>>,
     pub texture_manager: Arc<RwLock<TextureManager>>,
     pub pipeline_manager: Arc<RwLock<PipelineManager>>,
+    pub allocator: Arc<Mutex<Allocator>>,
 
     pub pdevice: vk::PhysicalDevice,
     pub queue_family_index: u32,
@@ -372,18 +373,19 @@ impl RenderContext {
                 Self::create_command_thread_pool(device.clone(), queue_family_index);
 
             let dynamic_rendering = DynamicRendering::new(&instance, &device);
-            let buffer_manager = ResourceManager::new(
-                Arc::new(device.clone()),
-                Allocator::new(&AllocatorCreateDesc {
+
+            let allocator = Arc::new(Mutex::new(Allocator::new(
+                &AllocatorCreateDesc {
                     instance: instance.clone(),
                     device: device.clone(),
                     physical_device: pdevice,
                     debug_settings: Default::default(),
-                    buffer_device_address: true, // Ideally, check the BufferDeviceAddressFeatures struct.
+                    buffer_device_address: false, // Ideally, check the BufferDeviceAddressFeatures struct.
                     allocation_sizes: Default::default(),
-                })
-                .unwrap(),
-            );
+                },
+            ).unwrap()));
+            let arc_device = Arc::new(device.clone());
+            let buffer_manager = ResourceManager::new(arc_device.clone(), allocator.clone());
             let texture_manager = TextureManager::new(
                 device.clone(),
                 Allocator::new(&AllocatorCreateDesc {
@@ -416,6 +418,7 @@ impl RenderContext {
                 buffer_manager: Arc::new(buffer_manager),
                 texture_manager: Arc::new(RwLock::new(texture_manager)),
                 pipeline_manager: Arc::new(RwLock::new(pipeline_manager)),
+                allocator,
                 // TODO: fetch from device
                 max_descriptor_count: {
                     (512 * 1024).min(
@@ -973,7 +976,7 @@ impl RenderContext {
     }
 
     #[tracing::instrument(skip(self))]
-    pub fn copy_buffer_to_texture(&self, buffer: &BufferHandle, texture: &TextureHandle) {
+    pub fn copy_buffer_to_texture(&self, buffer: &ResourceHandle<Buffer>, texture: &TextureHandle) {
         self.record(
             self.setup_command_buffer,
             self.setup_commands_reuse_fence,
@@ -1116,9 +1119,17 @@ impl RenderContext {
         self.texture_manager.write().unwrap()
     }
 
-    pub fn create_buffer(&self, desc: &BufferDescriptor) -> BufferHandle {
-        let id = self.buffer_manager.create(desc);
-        BufferHandle::new(id, self.buffer_manager.clone())
+    pub fn create_buffer(&self, desc: &BufferDescriptor) -> ResourceHandle<Buffer> {
+        let buffer = Buffer::new(
+            &self.device,
+            &mut self.allocator.lock().unwrap(),
+            desc.debug_name,
+            desc.size,
+            desc.usage,
+            desc.location
+        );
+        let id = self.buffer_manager.create(buffer);
+        ResourceHandle::new(id, self.buffer_manager.clone())
     }
 
     pub fn create_buffer_with_data(
@@ -1126,7 +1137,7 @@ impl RenderContext {
         desc: &BufferDescriptor,
         data: &[u8],
         offset: usize,
-    ) -> BufferHandle {
+    ) -> ResourceHandle<Buffer> {
         let mut desc = desc.clone();
         if desc.location == MemoryLocation::GpuOnly {
             desc.usage |= vk::BufferUsageFlags::TRANSFER_DST;
@@ -1134,17 +1145,15 @@ impl RenderContext {
         if desc.size == 0 {
             desc.size = (data.len() - offset) as u64;
         }
-        let id = self.buffer_manager.create(&desc);
-        let handle = BufferHandle::new(id, self.buffer_manager.clone());
-
+        
+        let handle = self.create_buffer(&desc);
         if desc.location == MemoryLocation::GpuOnly {
-            let staging_buffer_id = self.buffer_manager.create(&BufferDescriptor {
+            let staging_handle = self.create_buffer(&BufferDescriptor {
                 size: desc.size,
                 usage: vk::BufferUsageFlags::TRANSFER_SRC,
                 location: MemoryLocation::CpuToGpu,
                 debug_name: "Staging buffer",
             });
-            let staging_handle = BufferHandle::new(staging_buffer_id, self.buffer_manager.clone());
             let staging_buffer = self.buffer_manager.get_mut(staging_handle.id()).unwrap();
             staging_buffer.copy_from_slice(data, offset);
 

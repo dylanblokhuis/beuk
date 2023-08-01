@@ -1,7 +1,8 @@
 use beuk::ash::vk::{self, BufferUsageFlags, PipelineVertexInputStateCreateInfo};
+use beuk::buffer::Buffer;
 use beuk::ctx::RenderContextDescriptor;
 use beuk::memory::BufferDescriptor;
-use beuk::memory2::BufferHandle;
+use beuk::memory2::ResourceHandle;
 use beuk::pipeline::BlendState;
 use beuk::{
     ctx::RenderContext,
@@ -82,8 +83,8 @@ fn main() {
 
 struct Canvas {
     pipeline_handle: PipelineHandle,
-    vertex_buffer: BufferHandle,
-    index_buffer: BufferHandle,
+    vertex_buffer: ResourceHandle<Buffer>,
+    index_buffer: ResourceHandle<Buffer>,
 }
 
 #[repr(C, align(16))]

@@ -3,6 +3,9 @@ use gpu_allocator::{
     vulkan::{Allocation, AllocationCreateDesc, Allocator},
     MemoryLocation,
 };
+use std::sync::Arc;
+
+use crate::memory2::ResourceCleanup;
 
 #[derive(Debug, Default)]
 pub struct Buffer {
@@ -12,6 +15,12 @@ pub struct Buffer {
     pub has_been_written_to: bool,
     pub offset: u64,
     pub allocation: Option<Allocation>,
+}
+
+impl ResourceCleanup for Buffer {
+    fn cleanup(&mut self, device: Arc<ash::Device>, allocator: std::sync::Arc<std::sync::Mutex<Allocator>>) {
+        self.destroy(&device, &mut allocator.lock().unwrap());
+    }
 }
 
 impl Buffer {
