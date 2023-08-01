@@ -5,7 +5,9 @@ use gpu_allocator::{
 };
 use std::sync::Arc;
 
-#[derive(Debug)]
+use crate::memory2::ResourceCleanup;
+
+#[derive(Debug, Default)]
 pub struct Texture {
     pub image: vk::Image,
     pub allocation: Option<Allocation>,
@@ -13,6 +15,12 @@ pub struct Texture {
     pub format: vk::Format,
     pub extent: vk::Extent3D,
     pub offset: u64,
+}
+
+impl ResourceCleanup for Texture {
+    fn cleanup(&mut self, device: Arc<ash::Device>, allocator: Arc<std::sync::Mutex<Allocator>>) {
+        self.destroy(&device, &mut allocator.lock().unwrap());
+    }
 }
 
 impl Texture {

@@ -22,6 +22,7 @@ struct ResourceInner<T>(UnsafeCell<Resource<T>>);
 unsafe impl<T> Send for ResourceInner<T> {}
 unsafe impl<T> Sync for ResourceInner<T> {}
 
+/// Trait for resources that need to be cleaned up when they are destroyed.
 pub trait ResourceCleanup {
     fn cleanup(&mut self, device: Arc<ash::Device>, allocator: Arc<Mutex<Allocator>>);
 }

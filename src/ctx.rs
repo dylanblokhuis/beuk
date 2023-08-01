@@ -27,11 +27,10 @@ use std::{os::raw::c_char, sync::Arc};
 
 use crate::{
     memory::{
-        BufferDescriptor, MemoryLocation, PipelineHandle, PipelineManager, TextureHandle,
-        TextureManager,
+        BufferDescriptor, MemoryLocation, PipelineHandle, PipelineManager,
     },
     memory2::{ResourceHandle, ResourceManager},
-    pipeline::GraphicsPipelineDescriptor, buffer::Buffer,
+    pipeline::GraphicsPipelineDescriptor, buffer::Buffer, texture::Texture,
 };
 
 pub const RESERVED_DESCRIPTOR_COUNT: u32 = 32;
@@ -123,7 +122,7 @@ pub struct RenderContext {
     pub command_thread_pool: ThreadPool,
     pub threaded_command_buffers: Arc<RwLock<HashMap<usize, CommandBuffer>>>,
     pub buffer_manager: Arc<ResourceManager<Buffer>>,
-    pub texture_manager: Arc<RwLock<TextureManager>>,
+    pub texture_manager: Arc<ResourceManager<Texture>>,
     pub pipeline_manager: Arc<RwLock<PipelineManager>>,
     pub allocator: Arc<Mutex<Allocator>>,
 
@@ -386,17 +385,9 @@ impl RenderContext {
             ).unwrap()));
             let arc_device = Arc::new(device.clone());
             let buffer_manager = ResourceManager::new(arc_device.clone(), allocator.clone());
-            let texture_manager = TextureManager::new(
-                device.clone(),
-                Allocator::new(&AllocatorCreateDesc {
-                    instance: instance.clone(),
-                    device: device.clone(),
-                    physical_device: pdevice,
-                    debug_settings: Default::default(),
-                    buffer_device_address: false, // Ideally, check the BufferDeviceAddressFeatures struct.
-                    allocation_sizes: Default::default(),
-                })
-                .unwrap(),
+            let texture_manager = ResourceManager::new(
+                arc_device.clone(),
+                allocator.clone(),
             );
 
             let pipeline_manager = PipelineManager::new(
@@ -416,7 +407,7 @@ impl RenderContext {
                 threaded_command_buffers,
                 render_swapchain: Arc::new(RwLock::new(render_swapchain)),
                 buffer_manager: Arc::new(buffer_manager),
-                texture_manager: Arc::new(RwLock::new(texture_manager)),
+                texture_manager: Arc::new(texture_manager),
                 pipeline_manager: Arc::new(RwLock::new(pipeline_manager)),
                 allocator,
                 // TODO: fetch from device
@@ -976,13 +967,12 @@ impl RenderContext {
     }
 
     #[tracing::instrument(skip(self))]
-    pub fn copy_buffer_to_texture(&self, buffer: &ResourceHandle<Buffer>, texture: &TextureHandle) {
+    pub fn copy_buffer_to_texture(&self, buffer: &ResourceHandle<Buffer>, texture: &ResourceHandle<Texture>) {
         self.record(
             self.setup_command_buffer,
             self.setup_commands_reuse_fence,
             |ctx, command_buffer| unsafe {
-                let texture_manager = ctx.get_texture_manager();
-                let texture = texture_manager.get(texture.id());
+                let texture = ctx.texture_manager.get(texture.id()).unwrap();
                 {
                     let image_memory_barrier = vk::ImageMemoryBarrier::default()
                         .src_access_mask(vk::AccessFlags::empty())
@@ -1109,16 +1099,6 @@ impl RenderContext {
     //     self.buffer_manager.write().unwrap()
     // }
 
-    /// Returns a read lock to the buffer manager.
-    pub fn get_texture_manager(&self) -> std::sync::RwLockReadGuard<TextureManager> {
-        self.texture_manager.read().unwrap()
-    }
-
-    /// Returns a write lock to the buffer manager.
-    pub fn get_texture_manager_mut(&self) -> std::sync::RwLockWriteGuard<TextureManager> {
-        self.texture_manager.write().unwrap()
-    }
-
     pub fn create_buffer(&self, desc: &BufferDescriptor) -> ResourceHandle<Buffer> {
         let buffer = Buffer::new(
             &self.device,
@@ -1190,18 +1170,15 @@ impl RenderContext {
         &self,
         debug_name: &str,
         create_info: &vk::ImageCreateInfo,
-    ) -> TextureHandle {
-        let mut manager = self.texture_manager.write().unwrap();
-        let id = manager.create_texture(debug_name, create_info);
-        drop(manager);
-
-        TextureHandle::new(id, self.texture_manager.clone())
+    ) -> ResourceHandle<Texture> {
+        let texture = Texture::new(&self.device, &mut self.allocator.lock().unwrap(), debug_name, create_info);
+        let id = self.texture_manager.create(texture);
+        ResourceHandle::new(id, self.texture_manager.clone())
     }
 
     /// Creates or gets (if already created) a texture view, which can be cloned cheaply.
-    pub fn get_texture_view(&self, texture: &TextureHandle) -> Arc<vk::ImageView> {
-        let mut manager = self.texture_manager.write().unwrap();
-        let texture = manager.get_mut(texture.id());
+    pub fn get_texture_view(&self, texture: &ResourceHandle<Texture>) -> Arc<vk::ImageView> {
+        let texture = self.texture_manager.get_mut(texture.id()).unwrap();
         texture.create_view(&self.device)
     }
 
@@ -1260,7 +1237,7 @@ impl Drop for RenderContext {
             log::debug!("Dropping buffer manager");
             // self.buffer_manager.clear();
             log::debug!("Dropping texture manager");
-            self.get_texture_manager_mut().clear();
+            // self.get_texture_manager_mut().clear();
 
             self.device.destroy_command_pool(self.pool, None);
             self.device.destroy_device(None);
