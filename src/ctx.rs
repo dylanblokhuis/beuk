@@ -19,15 +19,15 @@ use ash::{vk, Entry};
 use ash::{Device, Instance};
 use gpu_allocator::vulkan::{Allocator, AllocatorCreateDesc};
 use rayon::ThreadPool;
-use std::{borrow::Cow, collections::HashMap, mem::ManuallyDrop};
+use std::{borrow::Cow, collections::HashMap};
 use std::{cell::RefCell, default::Default};
 use std::{ffi::CStr, sync::Mutex};
 use std::{ops::Drop, sync::RwLock};
 use std::{os::raw::c_char, sync::Arc};
 
 use crate::{
-    buffer::Buffer,
-    memory::{BufferDescriptor, MemoryLocation, PipelineHandle, PipelineManager},
+    buffer::{Buffer, BufferDescriptor},
+    memory::{MemoryLocation, PipelineHandle, PipelineManager},
     memory2::{ResourceHandle, ResourceManager},
     pipeline::GraphicsPipelineDescriptor,
     texture::Texture,

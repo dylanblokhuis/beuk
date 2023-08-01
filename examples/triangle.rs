@@ -1,7 +1,7 @@
 use beuk::ash::vk::{self, BufferUsageFlags, PipelineVertexInputStateCreateInfo};
-use beuk::buffer::Buffer;
+use beuk::buffer::{Buffer, BufferDescriptor};
 use beuk::ctx::RenderContextDescriptor;
-use beuk::memory::BufferDescriptor;
+
 use beuk::memory2::ResourceHandle;
 use beuk::pipeline::BlendState;
 use beuk::{

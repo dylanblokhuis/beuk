@@ -27,6 +27,26 @@ impl ResourceCleanup for Buffer {
     }
 }
 
+#[derive(Debug, Clone)]
+pub struct BufferDescriptor {
+    pub debug_name: &'static str,
+    pub size: vk::DeviceSize,
+    pub usage: vk::BufferUsageFlags,
+    /// GpuOnly will be a slower allocation, but it will be faster on the gpu
+    pub location: MemoryLocation,
+}
+
+impl Default for BufferDescriptor {
+    fn default() -> Self {
+        Self {
+            debug_name: "unnamed",
+            size: 0,
+            usage: vk::BufferUsageFlags::empty(),
+            location: MemoryLocation::CpuToGpu,
+        }
+    }
+}
+
 impl Buffer {
     pub fn new(
         device: &ash::Device,
