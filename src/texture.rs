@@ -18,6 +18,7 @@ pub struct Texture {
     pub subresource_range: vk::ImageSubresourceRange,
     pub layout: vk::ImageLayout,
     pub access_mask: vk::AccessFlags,
+    pub stage_mask: vk::PipelineStageFlags,
 }
 
 impl ResourceCleanup for Texture {
@@ -68,6 +69,7 @@ impl Texture {
                 .level_count(1)
                 .base_array_layer(0)
                 .layer_count(1),
+            stage_mask: vk::PipelineStageFlags::TOP_OF_PIPE,
         }
     }
 
@@ -133,8 +135,8 @@ impl Texture {
         unsafe {
             device.cmd_pipeline_barrier(
                 command_buffer,
-                desc.src_stage_mask,
-                desc.dst_stage_mask,
+                self.stage_mask,
+                desc.new_stage_mask,
                 vk::DependencyFlags::empty(),
                 &[],
                 &[],
@@ -143,6 +145,7 @@ impl Texture {
         }
         self.access_mask = desc.new_access_mask;
         self.layout = desc.new_layout;
+        self.stage_mask = desc.new_stage_mask;
     }
 
     // pub fn from_image_buffer(
@@ -231,8 +234,7 @@ impl Texture {
 pub struct TransitionDesc {
     pub new_layout: vk::ImageLayout,
     pub new_access_mask: vk::AccessFlags,
-    pub src_stage_mask: vk::PipelineStageFlags,
-    pub dst_stage_mask: vk::PipelineStageFlags,
+    pub new_stage_mask: vk::PipelineStageFlags,
 }
 
 impl Default for TransitionDesc {
@@ -240,8 +242,7 @@ impl Default for TransitionDesc {
         Self {
             new_layout: vk::ImageLayout::UNDEFINED,
             new_access_mask: vk::AccessFlags::empty(),
-            src_stage_mask: vk::PipelineStageFlags::TOP_OF_PIPE,
-            dst_stage_mask: vk::PipelineStageFlags::TOP_OF_PIPE,
+            new_stage_mask: vk::PipelineStageFlags::TOP_OF_PIPE,
         }
     }
 }

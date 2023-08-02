@@ -981,8 +981,7 @@ impl RenderContext {
                     &TransitionDesc {
                         new_layout: vk::ImageLayout::TRANSFER_DST_OPTIMAL,
                         new_access_mask: vk::AccessFlags::TRANSFER_WRITE,
-                        src_stage_mask: vk::PipelineStageFlags::TRANSFER,
-                        dst_stage_mask: vk::PipelineStageFlags::TRANSFER,
+                        new_stage_mask: vk::PipelineStageFlags::TRANSFER,
                     },
                 );
 
