@@ -9,8 +9,8 @@ use ash::{
         khr::{DynamicRendering, Surface, Swapchain},
     },
     vk::{
-        CommandBuffer, DebugUtilsMessageSeverityFlagsEXT, ExtDescriptorIndexingFn, ImageView,
-        KhrSamplerYcbcrConversionFn, PhysicalDeviceBufferDeviceAddressFeaturesKHR,
+        CommandBuffer, DebugUtilsMessageSeverityFlagsEXT, DeviceSize, ExtDescriptorIndexingFn,
+        ImageView, KhrSamplerYcbcrConversionFn, PhysicalDeviceBufferDeviceAddressFeaturesKHR,
         PhysicalDeviceDescriptorIndexingFeatures, PhysicalDeviceSamplerYcbcrConversionFeatures,
         PresentModeKHR, SurfaceKHR, API_VERSION_1_2,
     },
@@ -19,7 +19,7 @@ use ash::{vk, Entry};
 use ash::{Device, Instance};
 use gpu_allocator::vulkan::{Allocator, AllocatorCreateDesc};
 use rayon::ThreadPool;
-use std::{borrow::Cow, collections::HashMap};
+use std::{borrow::Cow, collections::HashMap, mem::size_of_val};
 use std::{cell::RefCell, default::Default};
 use std::{ffi::CStr, sync::Mutex};
 use std::{ops::Drop, sync::RwLock};
@@ -1124,8 +1124,8 @@ impl RenderContext {
         if desc.location == MemoryLocation::GpuOnly {
             desc.usage |= vk::BufferUsageFlags::TRANSFER_DST;
         }
-        if desc.size == 0 {
-            desc.size = (data.len() - offset) as u64;
+        if desc.size == Default::default() {
+            desc.size = size_of_val(data) as DeviceSize;
         }
 
         let handle = self.create_buffer(&desc);
@@ -1139,11 +1139,10 @@ impl RenderContext {
             let staging_buffer = self.buffer_manager.get_mut(staging_handle.id()).unwrap();
             staging_buffer.copy_from_slice(data, offset);
 
-            self.record(
+            self.record_submit(
                 self.setup_command_buffer,
                 self.setup_commands_reuse_fence,
-                |ctx, command_buffer| unsafe {
-                    let staging_buffer = self.buffer_manager.get(staging_handle.id()).unwrap();
+                |ctx: &RenderContext, command_buffer| unsafe {
                     let buffer = self.buffer_manager.get(handle.id()).unwrap();
                     ctx.device.cmd_copy_buffer(
                         command_buffer,
@@ -1152,12 +1151,11 @@ impl RenderContext {
                         &[vk::BufferCopy {
                             size: desc.size,
                             src_offset: 0,
-                            dst_offset: 0,
+                            dst_offset: offset as DeviceSize,
                         }],
                     )
                 },
             );
-            self.submit(&self.setup_command_buffer, self.setup_commands_reuse_fence);
         } else {
             self.buffer_manager
                 .get_mut(handle.id())
@@ -1165,7 +1163,7 @@ impl RenderContext {
                 .copy_from_slice(data, offset);
         }
 
-        handle.clone()
+        handle
     }
 
     pub fn create_texture(

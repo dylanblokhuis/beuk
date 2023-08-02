@@ -143,8 +143,6 @@ impl<T: Default + Debug + ResourceCleanup> ResourceManager<T> {
             panic!("No more free indices");
         };
 
-        println!("creating {:?}", index);
-
         let old_generation = unsafe { &*self.resources[index].0.get() }.generation;
         let new_generation = old_generation + 1;
 
