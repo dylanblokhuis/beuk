@@ -99,7 +99,7 @@ impl Shader {
 
         let descriptor_pool_info = vk::DescriptorPoolCreateInfo::default()
             .pool_sizes(&descriptor_pool_sizes)
-            .max_sets(2);
+            .max_sets(1024);
 
         let descriptor_pool = unsafe {
             device
