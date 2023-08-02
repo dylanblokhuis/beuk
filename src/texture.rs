@@ -15,6 +15,9 @@ pub struct Texture {
     pub format: vk::Format,
     pub extent: vk::Extent3D,
     pub offset: u64,
+    pub subresource_range: vk::ImageSubresourceRange,
+    pub layout: vk::ImageLayout,
+    pub access_mask: vk::AccessFlags,
 }
 
 impl ResourceCleanup for Texture {
@@ -57,6 +60,14 @@ impl Texture {
             format: image_info.format,
             extent: image_info.extent,
             offset,
+            layout: vk::ImageLayout::UNDEFINED,
+            access_mask: vk::AccessFlags::empty(),
+            subresource_range: vk::ImageSubresourceRange::default()
+                .aspect_mask(vk::ImageAspectFlags::COLOR)
+                .base_mip_level(0)
+                .level_count(1)
+                .base_array_layer(0)
+                .layer_count(1),
         }
     }
 
@@ -102,6 +113,36 @@ impl Texture {
         };
         allocator.free(allocation).unwrap();
         unsafe { device.destroy_image(self.image, None) };
+    }
+
+    /// Transition the image to a new layout and access mask
+    pub fn transition(
+        &mut self,
+        device: &ash::Device,
+        command_buffer: vk::CommandBuffer,
+        desc: &TransitionDesc,
+    ) {
+        let image_memory_barrier = vk::ImageMemoryBarrier::default()
+            .src_access_mask(self.access_mask)
+            .dst_access_mask(desc.new_access_mask)
+            .old_layout(self.layout)
+            .new_layout(desc.new_layout)
+            .image(self.image)
+            .subresource_range(self.subresource_range);
+
+        unsafe {
+            device.cmd_pipeline_barrier(
+                command_buffer,
+                desc.src_stage_mask,
+                desc.dst_stage_mask,
+                vk::DependencyFlags::empty(),
+                &[],
+                &[],
+                &[image_memory_barrier],
+            );
+        }
+        self.access_mask = desc.new_access_mask;
+        self.layout = desc.new_layout;
     }
 
     // pub fn from_image_buffer(
@@ -183,6 +224,24 @@ impl Texture {
             // vk::Format::Bc4Snorm => cx_bc(8),
             // vk::Format::Bc5Unorm => cx_bc(16),
             // vk::Format::Bc5Snorm => cx_bc(16),
+        }
+    }
+}
+
+pub struct TransitionDesc {
+    pub new_layout: vk::ImageLayout,
+    pub new_access_mask: vk::AccessFlags,
+    pub src_stage_mask: vk::PipelineStageFlags,
+    pub dst_stage_mask: vk::PipelineStageFlags,
+}
+
+impl Default for TransitionDesc {
+    fn default() -> Self {
+        Self {
+            new_layout: vk::ImageLayout::UNDEFINED,
+            new_access_mask: vk::AccessFlags::empty(),
+            src_stage_mask: vk::PipelineStageFlags::TOP_OF_PIPE,
+            dst_stage_mask: vk::PipelineStageFlags::TOP_OF_PIPE,
         }
     }
 }

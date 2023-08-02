@@ -30,7 +30,7 @@ use crate::{
     memory::{MemoryLocation, PipelineHandle, PipelineManager},
     memory2::{ResourceHandle, ResourceManager},
     pipeline::GraphicsPipelineDescriptor,
-    texture::Texture,
+    texture::{Texture, TransitionDesc},
 };
 
 pub const RESERVED_DESCRIPTOR_COUNT: u32 = 32;
@@ -970,43 +970,27 @@ impl RenderContext {
         buffer: &ResourceHandle<Buffer>,
         texture: &ResourceHandle<Texture>,
     ) {
-        self.record(
+        self.record_submit(
             self.setup_command_buffer,
             self.setup_commands_reuse_fence,
             |ctx, command_buffer| unsafe {
-                let texture = ctx.texture_manager.get(texture.id()).unwrap();
-                {
-                    let image_memory_barrier = vk::ImageMemoryBarrier::default()
-                        .src_access_mask(vk::AccessFlags::empty())
-                        .dst_access_mask(vk::AccessFlags::TRANSFER_WRITE)
-                        .old_layout(vk::ImageLayout::UNDEFINED)
-                        .new_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
-                        .image(texture.image)
-                        .subresource_range(
-                            vk::ImageSubresourceRange::default()
-                                .aspect_mask(vk::ImageAspectFlags::COLOR)
-                                .base_mip_level(0)
-                                .level_count(1)
-                                .base_array_layer(0)
-                                .layer_count(1),
-                        );
-
-                    self.device.cmd_pipeline_barrier(
-                        command_buffer,
-                        vk::PipelineStageFlags::TRANSFER,
-                        vk::PipelineStageFlags::TRANSFER,
-                        vk::DependencyFlags::empty(),
-                        &[],
-                        &[],
-                        &[image_memory_barrier],
-                    );
-                }
+                let texture = ctx.texture_manager.get_mut(texture.id()).unwrap();
+                texture.transition(
+                    &ctx.device,
+                    command_buffer,
+                    &TransitionDesc {
+                        new_layout: vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+                        new_access_mask: vk::AccessFlags::TRANSFER_WRITE,
+                        src_stage_mask: vk::PipelineStageFlags::TRANSFER,
+                        dst_stage_mask: vk::PipelineStageFlags::TRANSFER,
+                    },
+                );
 
                 ctx.device.cmd_copy_buffer_to_image(
                     command_buffer,
                     ctx.buffer_manager.get(buffer.id()).unwrap().buffer(),
                     texture.image,
-                    vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+                    texture.layout,
                     &[vk::BufferImageCopy::default()
                         .buffer_offset(0)
                         .buffer_row_length(texture.extent.width)
@@ -1021,7 +1005,6 @@ impl RenderContext {
                 );
             },
         );
-        self.submit(&self.setup_command_buffer, self.setup_commands_reuse_fence);
     }
 
     // pub fn copy_buffer_to_texture(&self, buffer: &Buffer, texture: &Image) {
