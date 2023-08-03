@@ -5,7 +5,7 @@ use gpu_allocator::{
 };
 use std::sync::Arc;
 
-use crate::memory2::ResourceHooks;
+use crate::memory::ResourceHooks;
 
 #[derive(Debug, Default)]
 pub struct Texture {

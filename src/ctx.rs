@@ -26,9 +26,9 @@ use std::{ops::Drop, sync::RwLock};
 use std::{os::raw::c_char, sync::Arc};
 
 use crate::{
-    buffer::{Buffer, BufferDescriptor},
-    memory::{MemoryLocation, PipelineHandle, PipelineManager, ImmutableShaderInfo},
-    memory2::{ResourceHandle, ResourceManager},
+    buffer::{Buffer, BufferDescriptor, MemoryLocation},
+    shaders::ImmutableShaderInfo,
+    memory::{ResourceHandle, ResourceManager},
     pipeline::{GraphicsPipelineDescriptor, GraphicsPipeline},
     texture::{Texture, TransitionDesc},
 };
@@ -112,7 +112,15 @@ thread_local! {
 }
 
 pub struct RenderContext {
+    pub buffer_manager: Arc<ResourceManager<Buffer>>,
+    pub texture_manager: Arc<ResourceManager<Texture>>,
+    pub graphics_pipelines: Arc<ResourceManager<GraphicsPipeline>>,
+    pub immutable_samplers: Arc<HashMap<SamplerDesc, vk::Sampler>>,
+    pub yuv_immutable_samplers: Arc<HashMap<(vk::Format, SamplerDesc), (vk::SamplerYcbcrConversion, vk::Sampler)>>,
     pub allocator: Arc<Mutex<Allocator>>,
+    pub threaded_command_buffers: Arc<RwLock<HashMap<usize, CommandBuffer>>>,    
+    pub render_swapchain: Arc<RwLock<RenderSwapchain>>,
+
     pub entry: Entry,
     pub instance: Instance,
     pub device: Device,
@@ -122,20 +130,11 @@ pub struct RenderContext {
     pub debug_call_back: vk::DebugUtilsMessengerEXT,
     pub max_descriptor_count: u32,
     pub command_thread_pool: ThreadPool,
-    pub threaded_command_buffers: Arc<RwLock<HashMap<usize, CommandBuffer>>>,
-    pub buffer_manager: Arc<ResourceManager<Buffer>>,
-    pub texture_manager: Arc<ResourceManager<Texture>>,
-    pub graphics_pipelines: Arc<ResourceManager<GraphicsPipeline>>,
-    pub immutable_samplers: Arc<HashMap<SamplerDesc, vk::Sampler>>,
-    pub yuv_conversion_samplers: Arc<HashMap<(vk::Format, SamplerDesc), (vk::SamplerYcbcrConversion, vk::Sampler)>>,
-
     pub pdevice: vk::PhysicalDevice,
     pub queue_family_index: u32,
     pub present_queue: vk::Queue,
 
     pub surface: vk::SurfaceKHR,
-
-    pub render_swapchain: Arc<RwLock<RenderSwapchain>>,
 
     pub pool: vk::CommandPool,
     pub draw_command_buffer: vk::CommandBuffer,
@@ -1175,8 +1174,8 @@ impl RenderContext {
     }
 
     pub fn create_graphics_pipeline(&self, desc: &GraphicsPipelineDescriptor) -> ResourceHandle<GraphicsPipeline> {
-        let pipeline = GraphicsPipeline::new(&self.device, desc)
-        let id = self.graphics_pipelines.create(desc);
+        let pipeline = GraphicsPipeline::new(&self.device, desc, & ImmutableShaderInfo { immutable_samplers: self.immutable_samplers.clone(),  yuv_conversion_samplers: self.yuv_immutable_samplers.clone(), max_descriptor_count: self.max_descriptor_count }, self.get_swapchain().surface_resolution);
+        let id = self.graphics_pipelines.create(pipeline);
         ResourceHandle::new(id, self.graphics_pipelines.clone())
     }   
 
@@ -1281,11 +1280,15 @@ fn create_immutable_samplers(device: &ash::Device) -> HashMap<SamplerDesc, vk::S
 fn create_immutable_yuv_samplers(device: &ash::Device) -> HashMap<(vk::Format, SamplerDesc), (vk::SamplerYcbcrConversion, vk::Sampler)> {
     let mut result = HashMap::new();
 
-    // to avoid creating the same sampler twice
-    if let Some(samplers) = self.yuv_conversion_samplers.get(&(format, desc)) {
-        return *samplers;
-    }
+    let formats = [
+        vk::Format::G8_B8R8_2PLANE_420_UNORM,
+        vk::Format::G8_B8_R8_3PLANE_420_UNORM,
+        vk::Format::G10X6_B10X6R10X6_2PLANE_420_UNORM_3PACK16,
+        vk::Format::G10X6_B10X6_R10X6_3PLANE_420_UNORM_3PACK16,
+    ];
 
+    for format in formats {
+        
     let sampler_conversion = unsafe {
         device
             .create_sampler_ycbcr_conversion(
@@ -1311,6 +1314,12 @@ fn create_immutable_yuv_samplers(device: &ash::Device) -> HashMap<(vk::Format, S
     let mut conversion_info =
         vk::SamplerYcbcrConversionInfo::default().conversion(sampler_conversion);
 
+    let desc = SamplerDesc {
+        texel_filter: vk::Filter::LINEAR,
+        mipmap_mode: vk::SamplerMipmapMode::LINEAR,
+        address_modes: vk::SamplerAddressMode::CLAMP_TO_EDGE,
+    };
+
     let sampler = unsafe {
         device
             .create_sampler(
@@ -1330,7 +1339,9 @@ fn create_immutable_yuv_samplers(device: &ash::Device) -> HashMap<(vk::Format, S
             )
             .unwrap()
     };
+    result
+    .insert((format, desc), (sampler_conversion, sampler));
+    }
 
-    self.yuv_conversion_samplers
-        .insert((format, desc), (sampler_conversion, sampler));
+   result
 }

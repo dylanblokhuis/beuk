@@ -1,287 +1,207 @@
-use ash::vk::{self};
 use std::{
-    collections::HashMap,
-    fmt::Debug,
-    hash::Hash,
-    sync::{Arc, RwLock},
+    cell::UnsafeCell,
+    fmt::{Debug, Formatter},
+    sync::{Arc, Mutex},
 };
 
-use crate::{
-    ctx::SamplerDesc,
-    pipeline::{GraphicsPipeline, GraphicsPipelineDescriptor},
-};
+use anyhow::{anyhow, Result};
+use ash::vk::Extent2D;
+use crossbeam_queue::ArrayQueue;
+use gpu_allocator::vulkan::Allocator;
 
-pub type MemoryLocation = gpu_allocator::MemoryLocation;
+pub type Generation = usize;
+pub type Index = usize;
 
-// pipelines
-
-pub struct ImmutableShaderInfo {
-    pub immutable_samplers: HashMap<SamplerDesc, vk::Sampler>,
-    pub yuv_conversion_samplers:
-        HashMap<(vk::Format, SamplerDesc), (vk::SamplerYcbcrConversion, vk::Sampler)>,
-    pub max_descriptor_count: u32,
-}
-impl ImmutableShaderInfo {
-    pub fn get_sampler(&self, desc: &SamplerDesc) -> vk::Sampler {
-        *self
-            .immutable_samplers
-            .get(desc)
-            .expect("Tried to get an immutable sampler that doesn't exist.")
-    }
-
-    pub fn get_yuv_conversion_sampler(
-        &mut self,
-        device: &ash::Device,
-        desc: SamplerDesc,
-        format: vk::Format,
-    ) -> (vk::SamplerYcbcrConversion, vk::Sampler) {
-        // to avoid creating the same sampler twice
-        if let Some(samplers) = self.yuv_conversion_samplers.get(&(format, desc)) {
-            return *samplers;
-        }
-
-        let sampler_conversion = unsafe {
-            device
-                .create_sampler_ycbcr_conversion(
-                    &vk::SamplerYcbcrConversionCreateInfo::default()
-                        .ycbcr_model(vk::SamplerYcbcrModelConversion::YCBCR_709)
-                        .ycbcr_range(vk::SamplerYcbcrRange::ITU_NARROW)
-                        .components(vk::ComponentMapping {
-                            r: vk::ComponentSwizzle::IDENTITY,
-                            g: vk::ComponentSwizzle::IDENTITY,
-                            b: vk::ComponentSwizzle::IDENTITY,
-                            a: vk::ComponentSwizzle::IDENTITY,
-                        })
-                        .chroma_filter(vk::Filter::LINEAR)
-                        .x_chroma_offset(vk::ChromaLocation::MIDPOINT)
-                        .y_chroma_offset(vk::ChromaLocation::MIDPOINT)
-                        .force_explicit_reconstruction(false)
-                        .format(format),
-                    None,
-                )
-                .unwrap()
-        };
-
-        let mut conversion_info =
-            vk::SamplerYcbcrConversionInfo::default().conversion(sampler_conversion);
-
-        let sampler = unsafe {
-            device
-                .create_sampler(
-                    &vk::SamplerCreateInfo::default()
-                        .mag_filter(desc.texel_filter)
-                        .min_filter(desc.texel_filter)
-                        .mipmap_mode(desc.mipmap_mode)
-                        .address_mode_u(desc.address_modes)
-                        .address_mode_v(desc.address_modes)
-                        .address_mode_w(desc.address_modes)
-                        .max_lod(vk::LOD_CLAMP_NONE)
-                        .max_anisotropy(16.0)
-                        .anisotropy_enable(false)
-                        .unnormalized_coordinates(false)
-                        .push_next(&mut conversion_info),
-                    None,
-                )
-                .unwrap()
-        };
-
-        self.yuv_conversion_samplers
-            .insert((format, desc), (sampler_conversion, sampler));
-
-        *self.yuv_conversion_samplers.get(&(format, desc)).unwrap()
-    }
+struct Resource<T> {
+    inner: T,
+    generation: Generation,
+    retain_count: usize,
 }
 
 #[derive(Debug)]
-pub struct PipelineHandle {
-    id: PipelineId,
-    manager: Arc<RwLock<PipelineManager>>,
+struct ResourceInner<T>(UnsafeCell<Resource<T>>);
+unsafe impl<T> Send for ResourceInner<T> {}
+unsafe impl<T> Sync for ResourceInner<T> {}
+
+/// Trait for resources that need to be cleaned up when they are destroyed.
+pub trait ResourceHooks {
+    fn cleanup(&mut self, device: Arc<ash::Device>, allocator: Arc<Mutex<Allocator>>);
+    fn on_swapchain_resize(&mut self, device: Arc<ash::Device>, allocator: Arc<Mutex<Allocator>>, new_surface_resolution: Extent2D) {}
 }
 
-impl PipelineHandle {
-    pub fn new(id: PipelineId, manager: Arc<RwLock<PipelineManager>>) -> Self {
+#[derive(Debug)]
+pub struct ResourceHandle<T: Default + Debug + ResourceHooks> {
+    id: ResourceId,
+    manager: Arc<ResourceManager<T>>,
+}
+
+impl<T: Default + Debug + ResourceHooks> ResourceHandle<T> {
+    pub fn new(id: ResourceId, manager: Arc<ResourceManager<T>>) -> Self {
         Self { id, manager }
     }
 
     #[inline]
-    pub fn id(&self) -> PipelineId {
-        self.id.clone()
+    pub fn id(&self) -> ResourceId {
+        self.id
     }
 }
 
-impl Clone for PipelineHandle {
-    #[tracing::instrument]
+#[derive(Debug, Clone, Copy)]
+pub struct ResourceId {
+    index: Index,
+    generation: Generation,
+}
+
+impl<T: Default + Debug + ResourceHooks> Clone for ResourceHandle<T> {
     fn clone(&self) -> Self {
-        self.manager.write().unwrap().retain(self.id.clone());
+        let resource = unsafe { &mut *self.manager.resources[self.id.index].0.get() };
+        if self.id.generation != resource.generation {
+            panic!("Buffer generation mismatch, cannot clone");
+        }
+        resource.retain_count += 1;
         Self {
-            id: self.id.clone(),
+            id: self.id,
             manager: self.manager.clone(),
         }
     }
 }
 
-impl Drop for PipelineHandle {
+impl<T: Default + Debug + ResourceHooks> Drop for ResourceHandle<T> {
     fn drop(&mut self) {
-        self.manager
-            .write()
-            .unwrap()
-            .remove_graphics_pipeline(self.id.clone());
+        self.manager.destroy(self.id).unwrap();
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct PipelineId(serde_hashkey::Key);
-
-pub struct PipelineManager {
-    graphics_pipelines: HashMap<PipelineId, GraphicsPipeline>,
-    counters: HashMap<PipelineId, usize>,
-    device: ash::Device,
-    swapchain_size: vk::Extent2D,
+pub struct ResourceManager<T> {
+    resources: Arc<boxcar::Vec<ResourceInner<T>>>,
+    free_indices: ArrayQueue<Index>,
+    device: Arc<ash::Device>,
+    allocator: Arc<Mutex<Allocator>>,
 }
 
-impl Debug for PipelineManager {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("PipelineManager")
-            .field("graphics_pipelines", &self.graphics_pipelines)
-            .field("counters", &self.counters)
+impl<T: Debug> Debug for ResourceManager<T> {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ResourceManager")
+            .field("resources", &self.resources)
+            .field("free_indices", &self.free_indices)
             .finish()
     }
 }
 
-impl PipelineManager {
-    pub fn new(
-        device: ash::Device,
-        device_properties: vk::PhysicalDeviceProperties,
-        swapchain_size: vk::Extent2D,
-    ) -> Self {
+impl<T: Default + Debug + ResourceHooks> ResourceManager<T> {
+    pub fn new(device: Arc<ash::Device>, allocator: Arc<Mutex<Allocator>>) -> Self {
+        let queue = ArrayQueue::new(1024);
+        let resources = Arc::new(boxcar::Vec::with_capacity(1024));
+        for i in 0..1024 {
+            queue.push(i).unwrap();
+            resources.push(ResourceInner(UnsafeCell::new(Resource {
+                inner: Default::default(),
+                generation: 0,
+                retain_count: 0,
+            })));
+        }
+
         Self {
-            device: device.clone(),
-            graphics_pipelines: HashMap::new(),
-            counters: HashMap::new(),
-            swapchain_size,
+            resources,
+            free_indices: queue,
+            device,
+            allocator,
         }
     }
 
     #[tracing::instrument(skip(self))]
-    pub fn create_graphics_pipeline(&mut self, desc: &GraphicsPipelineDescriptor) -> PipelineId {
-        let id = PipelineId(serde_hashkey::to_key(&desc).unwrap());
+    pub fn get(&self, handle: ResourceId) -> Option<&T> {
+        let resource = self.resources.get(handle.index);
+        let Some(lock) = resource else {
+            return None;
+        };
 
-        let pipeline: GraphicsPipeline = GraphicsPipeline::new(
-            &self.device,
-            desc,
-            &mut self.immutable_shader_info,
-            self.swapchain_size,
-        );
-        self.graphics_pipelines.insert(id.clone(), pipeline);
-        self.counters.insert(id.clone(), 1);
+        let data = unsafe { &*lock.0.get() };
+        if handle.generation != data.generation {
+            return None;
+        }
 
-        id
+        Some(&data.inner)
     }
 
     #[tracing::instrument(skip(self))]
-    pub fn get_graphics_pipeline(&self, key: &PipelineId) -> &GraphicsPipeline {
-        self.graphics_pipelines.get(key).unwrap()
+    pub fn get_mut(&self, handle: ResourceId) -> Option<&mut T> {
+        let resource = self.resources.get(handle.index);
+        let Some(lock) = resource else {
+            return None;
+        };
+
+        let data = unsafe { &mut *lock.0.get() };
+        if handle.generation != data.generation {
+            return None;
+        }
+
+        Some(&mut data.inner)
     }
 
     #[tracing::instrument(skip(self))]
-    pub fn retain(&mut self, id: PipelineId) {
-        let counter = self
-            .counters
-            .get_mut(&id)
-            .expect("Tried to retain a pipeline that doesn't exist");
-        *counter += 1;
-    }
+    pub fn create(&self, resource: T) -> ResourceId {
+        let Some(index) = self.free_indices.pop() else {
+            panic!("No more free indices");
+        };
 
-    /// will resize all pipelines that are using the swapchain size
-    pub fn resize_all_graphics_pipelines(&mut self, extent: vk::Extent2D) {
-        for (_, pipeline) in self.graphics_pipelines.iter_mut() {
-            // if the pipeline is using the swapchain size, update it
-            if pipeline.viewports[0].width == self.swapchain_size.width as f32
-                && pipeline.viewports[0].height == self.swapchain_size.height as f32
-            {
-                pipeline.viewports[0].width = extent.width as f32;
-                pipeline.viewports[0].height = extent.height as f32;
-                pipeline.scissors[0].extent = extent;
-            }
-        }
-        self.swapchain_size = extent;
-    }
+        let old_generation = unsafe { &*self.resources[index].0.get() }.generation;
+        let new_generation = old_generation + 1;
 
-    fn create_immutable_samplers(device: &ash::Device) -> HashMap<SamplerDesc, vk::Sampler> {
-        let texel_filters = [vk::Filter::NEAREST, vk::Filter::LINEAR];
-        let mipmap_modes = [
-            vk::SamplerMipmapMode::NEAREST,
-            vk::SamplerMipmapMode::LINEAR,
-        ];
-        let address_modes = [
-            vk::SamplerAddressMode::REPEAT,
-            vk::SamplerAddressMode::CLAMP_TO_EDGE,
-        ];
-
-        let mut result = HashMap::new();
-
-        for &texel_filter in &texel_filters {
-            for &mipmap_mode in &mipmap_modes {
-                for &address_modes in &address_modes {
-                    let anisotropy_enable = texel_filter == vk::Filter::LINEAR;
-
-                    result.insert(
-                        SamplerDesc {
-                            texel_filter,
-                            mipmap_mode,
-                            address_modes,
-                        },
-                        unsafe {
-                            device.create_sampler(
-                                &vk::SamplerCreateInfo::default()
-                                    .mag_filter(texel_filter)
-                                    .min_filter(texel_filter)
-                                    .mipmap_mode(mipmap_mode)
-                                    .address_mode_u(address_modes)
-                                    .address_mode_v(address_modes)
-                                    .address_mode_w(address_modes)
-                                    .max_lod(vk::LOD_CLAMP_NONE)
-                                    .max_anisotropy(16.0)
-                                    .anisotropy_enable(anisotropy_enable),
-                                None,
-                            )
-                        }
-                        .expect("create_sampler"),
-                    );
-                }
-            }
-        }
-
-        result
-    }
-
-    #[tracing::instrument]
-    pub fn remove_graphics_pipeline(&mut self, id: PipelineId) {
-        let pipeline = self.get_graphics_pipeline(&id);
-        pipeline.destroy(&self.device);
-        self.graphics_pipelines.remove(&id);
-    }
-
-    pub fn clear(&mut self) {
         unsafe {
-            for sampler in self.immutable_shader_info.immutable_samplers.values() {
-                self.device.destroy_sampler(*sampler, None);
-            }
-            for (conv, sampler) in self.immutable_shader_info.yuv_conversion_samplers.values() {
-                self.device.destroy_sampler_ycbcr_conversion(*conv, None);
-                self.device.destroy_sampler(*sampler, None);
+            *self.resources[index].0.get() = Resource {
+                inner: resource,
+                generation: new_generation,
+                retain_count: 1,
             }
         }
 
-        for (_, pipeline) in self.graphics_pipelines.iter() {
-            pipeline.destroy(&self.device);
+        ResourceId {
+            index,
+            generation: new_generation,
         }
-        self.graphics_pipelines.clear();
     }
-}
 
-impl Drop for PipelineManager {
-    fn drop(&mut self) {
-        self.clear();
+    #[tracing::instrument(skip(self))]
+    pub fn destroy(&self, handle: ResourceId) -> Result<()> {
+        let resource = self.resources.get(handle.index);
+        let Some(cell) = resource else {
+            return Err(anyhow!("No resource at index {:?}", handle.index));
+        };
+        let data = unsafe { &mut *cell.0.get() };
+
+        if handle.generation != data.generation {
+            // its OK to destroy a handle thats no longer valid, since it has already been destroyed.
+            return Ok(());
+        }
+        data.retain_count -= 1;
+        if data.retain_count > 0 {
+            return Ok(());
+        }
+
+        data.inner
+            .cleanup(self.device.clone(), self.allocator.clone());
+
+        let _ = self.free_indices.force_push(handle.index);
+        Ok(())
+    }
+
+    pub fn clear_all(&self) {
+        for (_, resource) in self.resources.iter() {
+            let data = unsafe { &mut *resource.0.get() };
+            data.inner
+                .cleanup(self.device.clone(), self.allocator.clone());
+            data.inner = Default::default();
+        }
+    }
+
+    /// Call the swapchain resize hooks for all resources.
+    pub fn call_swapchain_resize_hooks(&self, surface_resolution: Extent2D) {
+        println!("yo!");
+        for (_, resource) in self.resources.iter() {
+            let data = unsafe { &mut *resource.0.get() };
+            data.inner
+                .on_swapchain_resize(self.device.clone(), self.allocator.clone(), surface_resolution);
+        }
     }
 }
