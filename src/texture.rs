@@ -42,14 +42,15 @@ impl ResourceHooks for Texture {
         _old_surface_resolution: vk::Extent2D,
         new_surface_resolution: vk::Extent2D,
     ) {
-        if self.extent.width == new_surface_resolution.width
-            && self.extent.height == new_surface_resolution.height
-        {
-            return;
-        }
+        // if self.extent.width == new_surface_resolution.width
+        //     && self.extent.height == new_surface_resolution.height
+        // {
+        //     return;
+        // }
 
-        if !(self.usage == ImageUsageFlags::COLOR_ATTACHMENT
-            && self.usage == ImageUsageFlags::SAMPLED)
+        if !self
+            .usage
+            .contains(ImageUsageFlags::COLOR_ATTACHMENT | ImageUsageFlags::SAMPLED)
         {
             return;
         }
@@ -59,7 +60,7 @@ impl ResourceHooks for Texture {
 
         // Create new image with updated extent
         let image_info = vk::ImageCreateInfo {
-            image_type: vk::ImageType::TYPE_2D,
+            image_type: self.image_type,
             format: self.format,
             extent: vk::Extent3D {
                 width: new_surface_resolution.width,
