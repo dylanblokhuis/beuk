@@ -12,6 +12,7 @@ ash = { git = "https://github.com/ash-rs/ash.git", features = ["linked"] }
 ash-window = { git = "https://github.com/ash-rs/ash.git" }
 boxcar = "0.2.2"
 crossbeam-queue = "0.3.8"
+crossbeam-utils = "0.8.16"
 gpu-allocator = { git = "https://github.com/dylanblokhuis/gpu-allocator.git", features = ["vulkan", "ash"], rev = "9f1e44b038e8f8bf9529b1fb9df0f182935da16b" }
 log = "0.4.19"
 raw-window-handle = "0.5.2"
