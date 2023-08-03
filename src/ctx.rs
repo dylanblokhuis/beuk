@@ -27,9 +27,9 @@ use std::{os::raw::c_char, sync::Arc};
 
 use crate::{
     buffer::{Buffer, BufferDescriptor},
-    memory::{MemoryLocation, PipelineHandle, PipelineManager},
+    memory::{MemoryLocation, PipelineHandle, PipelineManager, ImmutableShaderInfo},
     memory2::{ResourceHandle, ResourceManager},
-    pipeline::GraphicsPipelineDescriptor,
+    pipeline::{GraphicsPipelineDescriptor, GraphicsPipeline},
     texture::{Texture, TransitionDesc},
 };
 
@@ -125,7 +125,9 @@ pub struct RenderContext {
     pub threaded_command_buffers: Arc<RwLock<HashMap<usize, CommandBuffer>>>,
     pub buffer_manager: Arc<ResourceManager<Buffer>>,
     pub texture_manager: Arc<ResourceManager<Texture>>,
-    pub pipeline_manager: Arc<RwLock<PipelineManager>>,
+    pub graphics_pipelines: Arc<ResourceManager<GraphicsPipeline>>,
+    pub immutable_samplers: Arc<HashMap<SamplerDesc, vk::Sampler>>,
+    pub yuv_conversion_samplers: Arc<HashMap<(vk::Format, SamplerDesc), (vk::SamplerYcbcrConversion, vk::Sampler)>>,
 
     pub pdevice: vk::PhysicalDevice,
     pub queue_family_index: u32,
@@ -388,18 +390,14 @@ impl RenderContext {
             let arc_device = Arc::new(device.clone());
             let buffer_manager = ResourceManager::new(arc_device.clone(), allocator.clone());
             let texture_manager = ResourceManager::new(arc_device.clone(), allocator.clone());
+            let graphics_pipelines = ResourceManager::new(arc_device.clone(), allocator.clone());
 
-            let pipeline_manager = PipelineManager::new(
-                device.clone(),
-                device_properties,
-                render_swapchain.surface_resolution,
-            );
-
+          
             Self {
                 allocator,
                 entry,
                 instance,
-                device,
+                device: device.clone(),
                 dynamic_rendering,
                 queue_family_index,
                 pdevice,
@@ -408,7 +406,9 @@ impl RenderContext {
                 render_swapchain: Arc::new(RwLock::new(render_swapchain)),
                 buffer_manager: Arc::new(buffer_manager),
                 texture_manager: Arc::new(texture_manager),
-                pipeline_manager: Arc::new(RwLock::new(pipeline_manager)),
+                graphics_pipelines: Arc::new(graphics_pipelines),
+                immutable_samplers: Arc::new(create_immutable_samplers(&device)),
+                yuv_immutable_samplers: Arc::new(create_immutable_yuv_samplers(&device)),
                 // TODO: fetch from device
                 max_descriptor_count: {
                     (512 * 1024).min(
@@ -621,10 +621,11 @@ impl RenderContext {
         };
         let surface_resolution = render_swapchain.surface_resolution;
         *self.render_swapchain.write().unwrap() = render_swapchain;
-        self.pipeline_manager
-            .write()
-            .unwrap()
-            .resize_all_graphics_pipelines(surface_resolution);
+        self.graphics_pipelines.call_swapchain_resize_hooks(surface_resolution);
+        // self.pipeline_manager
+        //     .write()
+        //     .unwrap()
+        //     .resize_all_graphics_pipelines(surface_resolution);
     }
 
     pub fn record(
@@ -1173,17 +1174,11 @@ impl RenderContext {
         Some(texture.create_view(&self.device))
     }
 
-    pub fn create_graphics_pipeline(&self, desc: &GraphicsPipelineDescriptor) -> PipelineHandle {
-        let mut manager = self.pipeline_manager.write().unwrap();
-        let id = manager.create_graphics_pipeline(desc);
-        drop(manager);
-        PipelineHandle::new(id, self.pipeline_manager.clone())
-    }
-
-    /// Returns a read lock to the pipeline manager.
-    pub fn get_pipeline_manager(&self) -> std::sync::RwLockReadGuard<PipelineManager> {
-        self.pipeline_manager.read().unwrap()
-    }
+    pub fn create_graphics_pipeline(&self, desc: &GraphicsPipelineDescriptor) -> ResourceHandle<GraphicsPipeline> {
+        let pipeline = GraphicsPipeline::new(&self.device, desc)
+        let id = self.graphics_pipelines.create(desc);
+        ResourceHandle::new(id, self.graphics_pipelines.clone())
+    }   
 
     /// Returns a read lock to the render swapchain.
     pub fn get_swapchain(&self) -> std::sync::RwLockReadGuard<RenderSwapchain> {
@@ -1220,7 +1215,7 @@ impl Drop for RenderContext {
                 });
             });
 
-            self.pipeline_manager.write().unwrap().clear();
+            self.graphics_pipelines.clear_all();
             self.buffer_manager.clear_all();
             self.texture_manager.clear_all();
 
@@ -1232,4 +1227,110 @@ impl Drop for RenderContext {
             self.instance.destroy_instance(None);
         }
     }
+}
+
+
+fn create_immutable_samplers(device: &ash::Device) -> HashMap<SamplerDesc, vk::Sampler> {
+    let texel_filters = [vk::Filter::NEAREST, vk::Filter::LINEAR];
+    let mipmap_modes = [
+        vk::SamplerMipmapMode::NEAREST,
+        vk::SamplerMipmapMode::LINEAR,
+    ];
+    let address_modes = [
+        vk::SamplerAddressMode::REPEAT,
+        vk::SamplerAddressMode::CLAMP_TO_EDGE,
+    ];
+
+    let mut result = HashMap::new();
+
+    for &texel_filter in &texel_filters {
+        for &mipmap_mode in &mipmap_modes {
+            for &address_modes in &address_modes {
+                let anisotropy_enable = texel_filter == vk::Filter::LINEAR;
+
+                result.insert(
+                    SamplerDesc {
+                        texel_filter,
+                        mipmap_mode,
+                        address_modes,
+                    },
+                    unsafe {
+                        device.create_sampler(
+                            &vk::SamplerCreateInfo::default()
+                                .mag_filter(texel_filter)
+                                .min_filter(texel_filter)
+                                .mipmap_mode(mipmap_mode)
+                                .address_mode_u(address_modes)
+                                .address_mode_v(address_modes)
+                                .address_mode_w(address_modes)
+                                .max_lod(vk::LOD_CLAMP_NONE)
+                                .max_anisotropy(16.0)
+                                .anisotropy_enable(anisotropy_enable),
+                            None,
+                        )
+                    }
+                    .expect("create_sampler"),
+                );
+            }
+        }
+    }
+
+    result
+}
+
+fn create_immutable_yuv_samplers(device: &ash::Device) -> HashMap<(vk::Format, SamplerDesc), (vk::SamplerYcbcrConversion, vk::Sampler)> {
+    let mut result = HashMap::new();
+
+    // to avoid creating the same sampler twice
+    if let Some(samplers) = self.yuv_conversion_samplers.get(&(format, desc)) {
+        return *samplers;
+    }
+
+    let sampler_conversion = unsafe {
+        device
+            .create_sampler_ycbcr_conversion(
+                &vk::SamplerYcbcrConversionCreateInfo::default()
+                    .ycbcr_model(vk::SamplerYcbcrModelConversion::YCBCR_709)
+                    .ycbcr_range(vk::SamplerYcbcrRange::ITU_NARROW)
+                    .components(vk::ComponentMapping {
+                        r: vk::ComponentSwizzle::IDENTITY,
+                        g: vk::ComponentSwizzle::IDENTITY,
+                        b: vk::ComponentSwizzle::IDENTITY,
+                        a: vk::ComponentSwizzle::IDENTITY,
+                    })
+                    .chroma_filter(vk::Filter::LINEAR)
+                    .x_chroma_offset(vk::ChromaLocation::MIDPOINT)
+                    .y_chroma_offset(vk::ChromaLocation::MIDPOINT)
+                    .force_explicit_reconstruction(false)
+                    .format(format),
+                None,
+            )
+            .unwrap()
+    };
+
+    let mut conversion_info =
+        vk::SamplerYcbcrConversionInfo::default().conversion(sampler_conversion);
+
+    let sampler = unsafe {
+        device
+            .create_sampler(
+                &vk::SamplerCreateInfo::default()
+                    .mag_filter(desc.texel_filter)
+                    .min_filter(desc.texel_filter)
+                    .mipmap_mode(desc.mipmap_mode)
+                    .address_mode_u(desc.address_modes)
+                    .address_mode_v(desc.address_modes)
+                    .address_mode_w(desc.address_modes)
+                    .max_lod(vk::LOD_CLAMP_NONE)
+                    .max_anisotropy(16.0)
+                    .anisotropy_enable(false)
+                    .unnormalized_coordinates(false)
+                    .push_next(&mut conversion_info),
+                None,
+            )
+            .unwrap()
+    };
+
+    self.yuv_conversion_samplers
+        .insert((format, desc), (sampler_conversion, sampler));
 }

@@ -5,6 +5,7 @@ use std::{
 };
 
 use anyhow::{anyhow, Result};
+use ash::vk::Extent2D;
 use crossbeam_queue::ArrayQueue;
 use gpu_allocator::vulkan::Allocator;
 
@@ -23,17 +24,18 @@ unsafe impl<T> Send for ResourceInner<T> {}
 unsafe impl<T> Sync for ResourceInner<T> {}
 
 /// Trait for resources that need to be cleaned up when they are destroyed.
-pub trait ResourceCleanup {
+pub trait ResourceHooks {
     fn cleanup(&mut self, device: Arc<ash::Device>, allocator: Arc<Mutex<Allocator>>);
+    fn on_swapchain_resize(&mut self, device: Arc<ash::Device>, allocator: Arc<Mutex<Allocator>>, new_surface_resolution: Extent2D) {}
 }
 
 #[derive(Debug)]
-pub struct ResourceHandle<T: Default + Debug + ResourceCleanup> {
+pub struct ResourceHandle<T: Default + Debug + ResourceHooks> {
     id: ResourceId,
     manager: Arc<ResourceManager<T>>,
 }
 
-impl<T: Default + Debug + ResourceCleanup> ResourceHandle<T> {
+impl<T: Default + Debug + ResourceHooks> ResourceHandle<T> {
     pub fn new(id: ResourceId, manager: Arc<ResourceManager<T>>) -> Self {
         Self { id, manager }
     }
@@ -50,7 +52,7 @@ pub struct ResourceId {
     generation: Generation,
 }
 
-impl<T: Default + Debug + ResourceCleanup> Clone for ResourceHandle<T> {
+impl<T: Default + Debug + ResourceHooks> Clone for ResourceHandle<T> {
     fn clone(&self) -> Self {
         let resource = unsafe { &mut *self.manager.resources[self.id.index].0.get() };
         if self.id.generation != resource.generation {
@@ -64,7 +66,7 @@ impl<T: Default + Debug + ResourceCleanup> Clone for ResourceHandle<T> {
     }
 }
 
-impl<T: Default + Debug + ResourceCleanup> Drop for ResourceHandle<T> {
+impl<T: Default + Debug + ResourceHooks> Drop for ResourceHandle<T> {
     fn drop(&mut self) {
         self.manager.destroy(self.id).unwrap();
     }
@@ -86,7 +88,7 @@ impl<T: Debug> Debug for ResourceManager<T> {
     }
 }
 
-impl<T: Default + Debug + ResourceCleanup> ResourceManager<T> {
+impl<T: Default + Debug + ResourceHooks> ResourceManager<T> {
     pub fn new(device: Arc<ash::Device>, allocator: Arc<Mutex<Allocator>>) -> Self {
         let queue = ArrayQueue::new(1024);
         let resources = Arc::new(boxcar::Vec::with_capacity(1024));
@@ -190,6 +192,15 @@ impl<T: Default + Debug + ResourceCleanup> ResourceManager<T> {
             data.inner
                 .cleanup(self.device.clone(), self.allocator.clone());
             data.inner = Default::default();
+        }
+    }
+
+    /// Call the swapchain resize hooks for all resources.
+    pub fn call_swapchain_resize_hooks(&self, surface_resolution: Extent2D) {
+        for (_, resource) in self.resources.iter() {
+            let data = unsafe { &mut *resource.0.get() };
+            data.inner
+                .on_swapchain_resize(self.device.clone(), self.allocator.clone(), surface_resolution);
         }
     }
 }

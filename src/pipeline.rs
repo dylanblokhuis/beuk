@@ -9,7 +9,7 @@ use ash::{
 };
 use serde::ser::SerializeStruct;
 
-use crate::memory::ImmutableShaderInfo;
+use crate::{memory::ImmutableShaderInfo, memory2::ResourceHooks};
 
 use super::shaders::Shader;
 
@@ -520,7 +520,7 @@ impl serde::ser::Serialize for GraphicsPipelineDescriptor<'_> {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct GraphicsPipeline {
     pub pipeline: vk::Pipeline,
     pub layout: vk::PipelineLayout,
@@ -534,6 +534,13 @@ pub struct GraphicsPipeline {
     pub scissors: Vec<vk::Rect2D>,
     pub vertex_shader: Shader,
     pub fragment_shader: Shader,
+}
+
+impl ResourceHooks for GraphicsPipeline {
+    fn cleanup(&mut self, device: std::sync::Arc<ash::Device>, allocator: std::sync::Arc<std::sync::Mutex<gpu_allocator::vulkan::Allocator>>) {
+        drop(allocator);
+        self.destroy(&device)
+    }
 }
 
 impl GraphicsPipeline {

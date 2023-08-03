@@ -1,7 +1,7 @@
 use std::{
     collections::{BTreeMap, HashMap},
     ffi::CString,
-    path::Path,
+    path::Path, default,
 };
 
 use ash::vk::{self, Filter, SamplerAddressMode, SamplerMipmapMode};
@@ -10,7 +10,7 @@ use shaderc::CompilationArtifact;
 
 use crate::{chunky_list::TempList, ctx::SamplerDesc, memory::ImmutableShaderInfo};
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub struct Shader {
     pub kind: ShaderKind,
     pub spirv_descripor_set_layouts: StageDescriptorSetLayouts,
@@ -20,8 +20,9 @@ pub struct Shader {
     pub spirv: Vec<u8>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub enum ShaderKind {
+    #[default]
     Vertex,
     Fragment,
     Compute,

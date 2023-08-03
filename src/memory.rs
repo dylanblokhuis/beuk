@@ -136,7 +136,6 @@ pub struct PipelineManager {
     graphics_pipelines: HashMap<PipelineId, GraphicsPipeline>,
     counters: HashMap<PipelineId, usize>,
     device: ash::Device,
-    pub immutable_shader_info: ImmutableShaderInfo,
     swapchain_size: vk::Extent2D,
 }
 
@@ -159,11 +158,6 @@ impl PipelineManager {
             device: device.clone(),
             graphics_pipelines: HashMap::new(),
             counters: HashMap::new(),
-            immutable_shader_info: ImmutableShaderInfo {
-                immutable_samplers: Self::create_immutable_samplers(&device),
-                max_descriptor_count: device_properties.limits.max_descriptor_set_samplers,
-                yuv_conversion_samplers: HashMap::new(),
-            },
             swapchain_size,
         }
     }

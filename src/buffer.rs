@@ -5,7 +5,7 @@ use gpu_allocator::{
 };
 use std::sync::Arc;
 
-use crate::memory2::ResourceCleanup;
+use crate::memory2::ResourceHooks;
 
 #[derive(Debug, Default)]
 pub struct Buffer {
@@ -17,7 +17,7 @@ pub struct Buffer {
     pub allocation: Option<Allocation>,
 }
 
-impl ResourceCleanup for Buffer {
+impl ResourceHooks for Buffer {
     fn cleanup(
         &mut self,
         device: Arc<ash::Device>,
