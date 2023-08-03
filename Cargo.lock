@@ -135,7 +135,6 @@ dependencies = [
  "bytemuck",
  "crossbeam-channel",
  "crossbeam-queue",
- "crossbeam-utils",
  "gpu-allocator",
  "image",
  "log",

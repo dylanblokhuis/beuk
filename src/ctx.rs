@@ -17,7 +17,6 @@ use ash::{
 };
 use ash::{vk, Entry};
 use ash::{Device, Instance};
-use crossbeam_utils::atomic::AtomicCell;
 use gpu_allocator::vulkan::{Allocator, AllocatorCreateDesc};
 use rayon::ThreadPool;
 use std::{borrow::Cow, collections::HashMap, mem::size_of_val};
@@ -134,7 +133,7 @@ pub struct RenderContext {
 
     pub surface: vk::SurfaceKHR,
 
-    pub render_swapchain: AtomicCell<RenderSwapchain>,
+    pub render_swapchain: Arc<RwLock<RenderSwapchain>>,
 
     pub pool: vk::CommandPool,
     pub draw_command_buffer: vk::CommandBuffer,
@@ -406,7 +405,7 @@ impl RenderContext {
                 pdevice,
                 command_thread_pool,
                 threaded_command_buffers,
-                render_swapchain: AtomicCell::new(render_swapchain),
+                render_swapchain: Arc::new(RwLock::new(render_swapchain)),
                 buffer_manager: Arc::new(buffer_manager),
                 texture_manager: Arc::new(texture_manager),
                 pipeline_manager: Arc::new(RwLock::new(pipeline_manager)),
@@ -621,7 +620,7 @@ impl RenderContext {
             )
         };
         let surface_resolution = render_swapchain.surface_resolution;
-        self.render_swapchain.store(render_swapchain);
+        *self.render_swapchain.write().unwrap() = render_swapchain;
         self.pipeline_manager
             .write()
             .unwrap()
@@ -1187,8 +1186,8 @@ impl RenderContext {
     }
 
     /// Returns a read lock to the render swapchain.
-    pub fn get_swapchain(&self) -> RenderSwapchain {
-        unsafe { self.render_swapchain.as_ptr().read() }
+    pub fn get_swapchain(&self) -> std::sync::RwLockReadGuard<RenderSwapchain> {
+        self.render_swapchain.read().unwrap()
     }
 }
 
