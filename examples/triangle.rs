@@ -2,11 +2,10 @@ use beuk::ash::vk::{self, BufferUsageFlags, PipelineVertexInputStateCreateInfo};
 use beuk::buffer::{Buffer, BufferDescriptor};
 use beuk::ctx::RenderContextDescriptor;
 
-use beuk::memory2::ResourceHandle;
-use beuk::pipeline::BlendState;
+use beuk::memory::ResourceHandle;
+use beuk::pipeline::{BlendState, GraphicsPipeline};
 use beuk::{
     ctx::RenderContext,
-    memory::PipelineHandle,
     pipeline::{GraphicsPipelineDescriptor, PrimitiveState},
     shaders::Shader,
 };
@@ -60,7 +59,7 @@ fn main() {
 }
 
 struct Canvas {
-    pipeline_handle: PipelineHandle,
+    pipeline_handle: ResourceHandle<GraphicsPipeline>,
     vertex_buffer: ResourceHandle<Buffer>,
     index_buffer: ResourceHandle<Buffer>,
 }
@@ -195,8 +194,7 @@ impl Canvas {
 
                 ctx.begin_rendering(command_buffer, color_attachments, Some(depth_attachment));
 
-                ctx.get_pipeline_manager()
-                    .get_graphics_pipeline(&self.pipeline_handle.id())
+                ctx.graphics_pipelines.get(self.pipeline_handle.id()).unwrap()
                     .bind(&ctx.device, command_buffer);
 
                 ctx.device.cmd_bind_vertex_buffers(

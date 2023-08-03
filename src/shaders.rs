@@ -2,15 +2,16 @@ use std::{
     collections::{BTreeMap, HashMap},
     ffi::CString,
     path::Path,
+    sync::Arc
 };
 
 use ash::vk::{self, Filter, SamplerAddressMode, SamplerMipmapMode};
 use rspirv_reflect::BindingCount;
 use shaderc::CompilationArtifact;
 
-use crate::{chunky_list::TempList, ctx::SamplerDesc, memory::ImmutableShaderInfo};
+use crate::{chunky_list::TempList, ctx::SamplerDesc};
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub struct Shader {
     pub kind: ShaderKind,
     pub spirv_descripor_set_layouts: StageDescriptorSetLayouts,
@@ -20,8 +21,9 @@ pub struct Shader {
     pub spirv: Vec<u8>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub enum ShaderKind {
+    #[default]
     Vertex,
     Fragment,
     Compute,
@@ -128,7 +130,7 @@ impl Shader {
     pub fn create_descriptor_set_layouts(
         &self,
         device: &ash::Device,
-        shader_info: &mut ImmutableShaderInfo,
+        shader_info: &ImmutableShaderInfo,
     ) -> (
         Vec<vk::DescriptorSetLayout>,
         Vec<HashMap<u32, vk::DescriptorType>>,
@@ -160,11 +162,9 @@ impl Shader {
                 let yuv_2_plane = *samplers.add(
                     shader_info
                         .get_yuv_conversion_sampler(
-                            device,
                             SamplerDesc {
                                 texel_filter: Filter::LINEAR,
                                 mipmap_mode: SamplerMipmapMode::LINEAR,
-                                // Must always be CLAMP_TO_EDGE
                                 address_modes: SamplerAddressMode::CLAMP_TO_EDGE,
                             },
                             vk::Format::G8_B8R8_2PLANE_420_UNORM,
@@ -175,11 +175,9 @@ impl Shader {
                 let yuv_3_plane = *samplers.add(
                     shader_info
                         .get_yuv_conversion_sampler(
-                            device,
                             SamplerDesc {
                                 texel_filter: Filter::LINEAR,
                                 mipmap_mode: SamplerMipmapMode::LINEAR,
-                                // Must always be CLAMP_TO_EDGE
                                 address_modes: SamplerAddressMode::CLAMP_TO_EDGE,
                             },
                             vk::Format::G8_B8_R8_3PLANE_420_UNORM,
@@ -190,11 +188,9 @@ impl Shader {
                 let yuv_2_plane_hdr = *samplers.add(
                     shader_info
                         .get_yuv_conversion_sampler(
-                            device,
                             SamplerDesc {
                                 texel_filter: Filter::LINEAR,
                                 mipmap_mode: SamplerMipmapMode::LINEAR,
-                                // Must always be CLAMP_TO_EDGE
                                 address_modes: SamplerAddressMode::CLAMP_TO_EDGE,
                             },
                             vk::Format::G10X6_B10X6R10X6_2PLANE_420_UNORM_3PACK16,
@@ -205,11 +201,9 @@ impl Shader {
                 let yuv_3_plane_hdr = *samplers.add(
                     shader_info
                         .get_yuv_conversion_sampler(
-                            device,
                             SamplerDesc {
                                 texel_filter: Filter::LINEAR,
                                 mipmap_mode: SamplerMipmapMode::LINEAR,
-                                // Must always be CLAMP_TO_EDGE
                                 address_modes: SamplerAddressMode::CLAMP_TO_EDGE,
                             },
                             vk::Format::G10X6_B10X6_R10X6_3PLANE_420_UNORM_3PACK16,
@@ -469,5 +463,34 @@ impl Shader {
             kind,
             entry_point,
         )
+    }
+}
+
+
+
+
+pub struct ImmutableShaderInfo {
+    pub immutable_samplers: Arc<HashMap<SamplerDesc, vk::Sampler>>,
+    pub yuv_conversion_samplers:
+        Arc<HashMap<(vk::Format, SamplerDesc), (vk::SamplerYcbcrConversion, vk::Sampler)>>,
+    pub max_descriptor_count: u32,
+}
+impl ImmutableShaderInfo {
+    pub fn get_sampler(&self, desc: &SamplerDesc) -> vk::Sampler {
+        *self
+            .immutable_samplers
+            .get(desc)
+            .expect("Tried to get an immutable sampler that doesn't exist.")
+    }
+
+    pub fn get_yuv_conversion_sampler(
+        &self,
+        desc: SamplerDesc,
+        format: vk::Format,
+    ) -> (vk::SamplerYcbcrConversion, vk::Sampler) {
+        *self
+            .yuv_conversion_samplers
+            .get(&(format, desc))
+            .expect("Tried to get an immutable yuv sampler that doesn't exist.")
     }
 }

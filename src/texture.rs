@@ -5,7 +5,7 @@ use gpu_allocator::{
 };
 use std::sync::Arc;
 
-use crate::memory2::ResourceCleanup;
+use crate::memory::ResourceHooks;
 
 #[derive(Debug, Default)]
 pub struct Texture {
@@ -21,7 +21,7 @@ pub struct Texture {
     pub stage_mask: vk::PipelineStageFlags,
 }
 
-impl ResourceCleanup for Texture {
+impl ResourceHooks for Texture {
     fn cleanup(&mut self, device: Arc<ash::Device>, allocator: Arc<std::sync::Mutex<Allocator>>) {
         self.destroy(&device, &mut allocator.lock().unwrap());
     }

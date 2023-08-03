@@ -9,7 +9,7 @@ use ash::{
 };
 use serde::ser::SerializeStruct;
 
-use crate::memory::ImmutableShaderInfo;
+use crate::{memory::ResourceHooks, shaders::ImmutableShaderInfo};
 
 use super::shaders::Shader;
 
@@ -520,7 +520,7 @@ impl serde::ser::Serialize for GraphicsPipelineDescriptor<'_> {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct GraphicsPipeline {
     pub pipeline: vk::Pipeline,
     pub layout: vk::PipelineLayout,
@@ -536,11 +536,22 @@ pub struct GraphicsPipeline {
     pub fragment_shader: Shader,
 }
 
+impl ResourceHooks for GraphicsPipeline {
+    fn cleanup(&mut self, device: std::sync::Arc<ash::Device>, allocator: std::sync::Arc<std::sync::Mutex<gpu_allocator::vulkan::Allocator>>) {
+        drop(allocator);
+        self.destroy(&device)
+    }
+
+    fn on_swapchain_resize(&mut self, device: std::sync::Arc<ash::Device>, allocator: std::sync::Arc<std::sync::Mutex<gpu_allocator::vulkan::Allocator>>, new_surface_resolution: vk::Extent2D) {
+        println!("Resize!");
+    }
+}
+
 impl GraphicsPipeline {
     pub fn new(
         device: &Device,
         desc: &GraphicsPipelineDescriptor,
-        shader_info: &mut ImmutableShaderInfo,
+        shader_info: &ImmutableShaderInfo,
         swapchain_size: vk::Extent2D,
     ) -> Self {
         let vk_sample_mask = [

@@ -1,12 +1,11 @@
 use beuk::ash::vk::{self, BufferUsageFlags, PipelineVertexInputStateCreateInfo};
+use beuk::buffer::MemoryLocation;
 use beuk::buffer::{Buffer, BufferDescriptor};
 use beuk::ctx::{RenderContextDescriptor, SamplerDesc};
-use beuk::memory::MemoryLocation;
-use beuk::memory2::ResourceHandle;
-use beuk::pipeline::BlendState;
+use beuk::memory::ResourceHandle;
+use beuk::pipeline::{BlendState, GraphicsPipeline};
 use beuk::{
     ctx::RenderContext,
-    memory::PipelineHandle,
     pipeline::{GraphicsPipelineDescriptor, PrimitiveState},
     shaders::Shader,
 };
@@ -59,7 +58,7 @@ fn main() {
 }
 
 struct Canvas {
-    pipeline_handle: PipelineHandle,
+    pipeline_handle: ResourceHandle<GraphicsPipeline>,
     vertex_buffer: ResourceHandle<Buffer>,
     index_buffer: ResourceHandle<Buffer>,
 }
@@ -202,8 +201,7 @@ impl Canvas {
         let view = ctx.get_texture_view(&texture_handle).unwrap();
 
         unsafe {
-            let pipelines = ctx.get_pipeline_manager();
-            let pipeline = pipelines.get_graphics_pipeline(&pipeline_handle.id());
+            let pipeline = ctx.graphics_pipelines.get(pipeline_handle.id()).unwrap();
             ctx.device.update_descriptor_sets(
                 &[vk::WriteDescriptorSet::default()
                     .dst_set(pipeline.descriptor_sets[0])
@@ -213,11 +211,15 @@ impl Canvas {
                         &vk::DescriptorImageInfo::default()
                             .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
                             .image_view(*view)
-                            .sampler(pipelines.immutable_shader_info.get_sampler(&SamplerDesc {
-                                address_modes: vk::SamplerAddressMode::REPEAT,
-                                mipmap_mode: vk::SamplerMipmapMode::LINEAR,
-                                texel_filter: vk::Filter::LINEAR,
-                            })),
+                            .sampler(
+                                *ctx.immutable_samplers
+                                    .get(&SamplerDesc {
+                                        address_modes: vk::SamplerAddressMode::REPEAT,
+                                        mipmap_mode: vk::SamplerMipmapMode::LINEAR,
+                                        texel_filter: vk::Filter::LINEAR,
+                                    })
+                                    .unwrap(),
+                            ),
                     ))],
                 &[],
             );
@@ -261,8 +263,9 @@ impl Canvas {
 
                 ctx.begin_rendering(command_buffer, color_attachments, Some(depth_attachment));
 
-                ctx.get_pipeline_manager()
-                    .get_graphics_pipeline(&self.pipeline_handle.id())
+                ctx.graphics_pipelines
+                    .get(self.pipeline_handle.id())
+                    .unwrap()
                     .bind(&ctx.device, command_buffer);
 
                 ctx.device.cmd_bind_vertex_buffers(

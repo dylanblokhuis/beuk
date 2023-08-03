@@ -2,7 +2,6 @@ pub mod buffer;
 mod chunky_list;
 pub mod ctx;
 pub mod memory;
-pub mod memory2;
 pub mod pipeline;
 pub mod shaders;
 pub mod texture;

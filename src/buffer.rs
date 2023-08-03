@@ -1,11 +1,10 @@
 use ash::vk::{self, BufferCreateInfo};
-use gpu_allocator::{
-    vulkan::{Allocation, AllocationCreateDesc, Allocator},
-    MemoryLocation,
-};
+use gpu_allocator::vulkan::{Allocation, AllocationCreateDesc, Allocator};
 use std::sync::Arc;
 
-use crate::memory2::ResourceCleanup;
+use crate::memory::ResourceHooks;
+
+pub type MemoryLocation = gpu_allocator::MemoryLocation;
 
 #[derive(Debug, Default)]
 pub struct Buffer {
@@ -17,7 +16,7 @@ pub struct Buffer {
     pub allocation: Option<Allocation>,
 }
 
-impl ResourceCleanup for Buffer {
+impl ResourceHooks for Buffer {
     fn cleanup(
         &mut self,
         device: Arc<ash::Device>,
