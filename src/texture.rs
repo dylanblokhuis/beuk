@@ -34,7 +34,7 @@ impl ResourceHooks for Texture {
         self.destroy(&device, &mut allocator.lock().unwrap());
     }
 
-    // Some resources need to be recreated when the swapchain is resized
+    // Some resources, like color attachments that use the swapchain size need to be recreated when the swapchain is resized
     fn on_swapchain_resize(
         &mut self,
         device: Arc<ash::Device>,
@@ -42,11 +42,11 @@ impl ResourceHooks for Texture {
         _old_surface_resolution: vk::Extent2D,
         new_surface_resolution: vk::Extent2D,
     ) {
-        // if self.extent.width == new_surface_resolution.width
-        //     && self.extent.height == new_surface_resolution.height
-        // {
-        //     return;
-        // }
+        if self.extent.width == new_surface_resolution.width
+            && self.extent.height == new_surface_resolution.height
+        {
+            return;
+        }
 
         if !self
             .usage
@@ -80,8 +80,6 @@ impl ResourceHooks for Texture {
         let name = self.name.clone();
         // Reconstruct the texture with the new size
         *self = Texture::new(&device, &mut allocator.lock().unwrap(), &name, &image_info);
-
-        // If needed, create a new view
         self.create_view(&device);
     }
 }
