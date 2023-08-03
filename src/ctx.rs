@@ -625,6 +625,8 @@ impl RenderContext {
         *self.render_swapchain.write().unwrap() = render_swapchain;
         self.graphics_pipelines
             .call_swapchain_resize_hooks(old_surface_resolution, new_surface_resolution);
+        self.texture_manager
+            .call_swapchain_resize_hooks(old_surface_resolution, new_surface_resolution);
         // self.pipeline_manager
         //     .write()
         //     .unwrap()

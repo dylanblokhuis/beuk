@@ -1,4 +1,4 @@
-use ash::vk;
+use ash::vk::{self, ImageUsageFlags};
 use gpu_allocator::{
     vulkan::{Allocation, AllocationCreateDesc, Allocator},
     MemoryLocation,
@@ -12,18 +12,76 @@ pub struct Texture {
     pub image: vk::Image,
     pub allocation: Option<Allocation>,
     pub view: Option<Arc<vk::ImageView>>,
+    pub offset: u64,
+
+    pub image_type: vk::ImageType,
     pub format: vk::Format,
     pub extent: vk::Extent3D,
-    pub offset: u64,
+    pub samples: vk::SampleCountFlags,
+    pub usage: vk::ImageUsageFlags,
+    pub mip_levels: u32,
+    pub array_layers: u32,
     pub subresource_range: vk::ImageSubresourceRange,
+
     pub layout: vk::ImageLayout,
     pub access_mask: vk::AccessFlags,
     pub stage_mask: vk::PipelineStageFlags,
+    pub name: String,
 }
 
 impl ResourceHooks for Texture {
     fn cleanup(&mut self, device: Arc<ash::Device>, allocator: Arc<std::sync::Mutex<Allocator>>) {
         self.destroy(&device, &mut allocator.lock().unwrap());
+    }
+
+    // Some resources need to be recreated when the swapchain is resized
+    fn on_swapchain_resize(
+        &mut self,
+        device: Arc<ash::Device>,
+        allocator: Arc<std::sync::Mutex<Allocator>>,
+        _old_surface_resolution: vk::Extent2D,
+        new_surface_resolution: vk::Extent2D,
+    ) {
+        if self.extent.width == new_surface_resolution.width
+            && self.extent.height == new_surface_resolution.height
+        {
+            return;
+        }
+
+        if !(self.usage == ImageUsageFlags::COLOR_ATTACHMENT
+            && self.usage == ImageUsageFlags::SAMPLED)
+        {
+            return;
+        }
+
+        // Clean up the old resources
+        self.destroy(&device, &mut allocator.lock().unwrap());
+
+        // Create new image with updated extent
+        let image_info = vk::ImageCreateInfo {
+            image_type: vk::ImageType::TYPE_2D,
+            format: self.format,
+            extent: vk::Extent3D {
+                width: new_surface_resolution.width,
+                height: new_surface_resolution.height,
+                depth: 1,
+            },
+            samples: self.samples,
+            usage: self.usage,
+            mip_levels: self.mip_levels,
+            array_layers: self.array_layers,
+            sharing_mode: vk::SharingMode::EXCLUSIVE,
+            tiling: vk::ImageTiling::OPTIMAL,
+            initial_layout: vk::ImageLayout::UNDEFINED,
+            ..Default::default() // Set other fields as necessary
+        };
+
+        let name = self.name.clone();
+        // Reconstruct the texture with the new size
+        *self = Texture::new(&device, &mut allocator.lock().unwrap(), &name, &image_info);
+
+        // If needed, create a new view
+        self.create_view(&device);
     }
 }
 
@@ -70,6 +128,13 @@ impl Texture {
                 .base_array_layer(0)
                 .layer_count(1),
             stage_mask: vk::PipelineStageFlags::TOP_OF_PIPE,
+
+            array_layers: image_info.array_layers,
+            image_type: image_info.image_type,
+            mip_levels: image_info.mip_levels,
+            samples: image_info.samples,
+            usage: image_info.usage,
+            name: debug_name.to_string(),
         }
     }
 
