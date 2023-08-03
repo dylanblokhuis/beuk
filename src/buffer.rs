@@ -9,11 +9,11 @@ pub type MemoryLocation = gpu_allocator::MemoryLocation;
 #[derive(Debug, Default)]
 pub struct Buffer {
     pub buffer: vk::Buffer,
+    pub allocation: Option<Allocation>,
     pub size: u64,
     pub device_addr: u64,
     pub has_been_written_to: bool,
     pub offset: u64,
-    pub allocation: Option<Allocation>,
 }
 
 impl ResourceHooks for Buffer {

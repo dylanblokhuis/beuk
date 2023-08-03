@@ -2,7 +2,7 @@ use std::{
     collections::{BTreeMap, HashMap},
     ffi::CString,
     path::Path,
-    sync::Arc
+    sync::Arc,
 };
 
 use ash::vk::{self, Filter, SamplerAddressMode, SamplerMipmapMode};
@@ -100,6 +100,7 @@ impl Shader {
         }
 
         let descriptor_pool_info = vk::DescriptorPoolCreateInfo::default()
+            .flags(vk::DescriptorPoolCreateFlags::FREE_DESCRIPTOR_SET)
             .pool_sizes(&descriptor_pool_sizes)
             .max_sets(1024);
 
@@ -465,9 +466,6 @@ impl Shader {
         )
     }
 }
-
-
-
 
 pub struct ImmutableShaderInfo {
     pub immutable_samplers: Arc<HashMap<SamplerDesc, vk::Sampler>>,

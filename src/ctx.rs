@@ -27,9 +27,9 @@ use std::{os::raw::c_char, sync::Arc};
 
 use crate::{
     buffer::{Buffer, BufferDescriptor, MemoryLocation},
-    shaders::ImmutableShaderInfo,
     memory::{ResourceHandle, ResourceManager},
-    pipeline::{GraphicsPipelineDescriptor, GraphicsPipeline},
+    pipeline::{GraphicsPipeline, GraphicsPipelineDescriptor},
+    shaders::ImmutableShaderInfo,
     texture::{Texture, TransitionDesc},
 };
 
@@ -116,9 +116,10 @@ pub struct RenderContext {
     pub texture_manager: Arc<ResourceManager<Texture>>,
     pub graphics_pipelines: Arc<ResourceManager<GraphicsPipeline>>,
     pub immutable_samplers: Arc<HashMap<SamplerDesc, vk::Sampler>>,
-    pub yuv_immutable_samplers: Arc<HashMap<(vk::Format, SamplerDesc), (vk::SamplerYcbcrConversion, vk::Sampler)>>,
+    pub yuv_immutable_samplers:
+        Arc<HashMap<(vk::Format, SamplerDesc), (vk::SamplerYcbcrConversion, vk::Sampler)>>,
     pub allocator: Arc<Mutex<Allocator>>,
-    pub threaded_command_buffers: Arc<RwLock<HashMap<usize, CommandBuffer>>>,    
+    pub threaded_command_buffers: Arc<RwLock<HashMap<usize, CommandBuffer>>>,
     pub render_swapchain: Arc<RwLock<RenderSwapchain>>,
 
     pub entry: Entry,
@@ -386,12 +387,13 @@ impl RenderContext {
                 })
                 .unwrap(),
             ));
-            let arc_device = Arc::new(device.clone());
-            let buffer_manager = ResourceManager::new(arc_device.clone(), allocator.clone());
-            let texture_manager = ResourceManager::new(arc_device.clone(), allocator.clone());
-            let graphics_pipelines = ResourceManager::new(arc_device.clone(), allocator.clone());
 
-          
+            let arc_device = Arc::new(device.clone());
+            let buffer_manager = ResourceManager::new(arc_device.clone(), allocator.clone(), 512);
+            let texture_manager = ResourceManager::new(arc_device.clone(), allocator.clone(), 512);
+            let graphics_pipelines =
+                ResourceManager::new(arc_device.clone(), allocator.clone(), 64);
+
             Self {
                 allocator,
                 entry,
@@ -606,6 +608,7 @@ impl RenderContext {
                 .device_wait_idle()
                 .expect("Failed to wait device idle!")
         };
+        let old_surface_resolution = self.get_swapchain().surface_resolution;
         self.cleanup_swapchain();
         let render_swapchain = {
             let present_mode = self.get_swapchain().present_mode;
@@ -618,9 +621,10 @@ impl RenderContext {
                 present_mode,
             )
         };
-        let surface_resolution = render_swapchain.surface_resolution;
+        let new_surface_resolution = render_swapchain.surface_resolution;
         *self.render_swapchain.write().unwrap() = render_swapchain;
-        self.graphics_pipelines.call_swapchain_resize_hooks(surface_resolution);
+        self.graphics_pipelines
+            .call_swapchain_resize_hooks(old_surface_resolution, new_surface_resolution);
         // self.pipeline_manager
         //     .write()
         //     .unwrap()
@@ -975,7 +979,7 @@ impl RenderContext {
             self.setup_command_buffer,
             self.setup_commands_reuse_fence,
             |ctx, command_buffer| unsafe {
-                let texture = ctx.texture_manager.get_mut(texture.id()).unwrap();
+                let texture = ctx.texture_manager.get_mut(texture).unwrap();
                 texture.transition(
                     &ctx.device,
                     command_buffer,
@@ -988,7 +992,7 @@ impl RenderContext {
 
                 ctx.device.cmd_copy_buffer_to_image(
                     command_buffer,
-                    ctx.buffer_manager.get(buffer.id()).unwrap().buffer(),
+                    ctx.buffer_manager.get(&buffer).unwrap().buffer(),
                     texture.image,
                     texture.layout,
                     &[vk::BufferImageCopy::default()
@@ -1119,14 +1123,14 @@ impl RenderContext {
                 location: MemoryLocation::CpuToGpu,
                 debug_name: "Staging buffer",
             });
-            let staging_buffer = self.buffer_manager.get_mut(staging_handle.id()).unwrap();
+            let staging_buffer = self.buffer_manager.get_mut(&staging_handle).unwrap();
             staging_buffer.copy_from_slice(data, offset);
 
             self.record_submit(
                 self.setup_command_buffer,
                 self.setup_commands_reuse_fence,
                 |ctx: &RenderContext, command_buffer| unsafe {
-                    let buffer = self.buffer_manager.get(handle.id()).unwrap();
+                    let buffer = self.buffer_manager.get(&handle).unwrap();
                     ctx.device.cmd_copy_buffer(
                         command_buffer,
                         staging_buffer.buffer(),
@@ -1141,7 +1145,7 @@ impl RenderContext {
             );
         } else {
             self.buffer_manager
-                .get_mut(handle.id())
+                .get_mut(&handle)
                 .unwrap()
                 .copy_from_slice(data, offset);
         }
@@ -1169,15 +1173,27 @@ impl RenderContext {
         &self,
         texture: &ResourceHandle<Texture>,
     ) -> Option<Arc<vk::ImageView>> {
-        let texture = self.texture_manager.get_mut(texture.id())?;
+        let texture = self.texture_manager.get_mut(texture)?;
         Some(texture.create_view(&self.device))
     }
 
-    pub fn create_graphics_pipeline(&self, desc: &GraphicsPipelineDescriptor) -> ResourceHandle<GraphicsPipeline> {
-        let pipeline = GraphicsPipeline::new(&self.device, desc, & ImmutableShaderInfo { immutable_samplers: self.immutable_samplers.clone(),  yuv_conversion_samplers: self.yuv_immutable_samplers.clone(), max_descriptor_count: self.max_descriptor_count }, self.get_swapchain().surface_resolution);
+    pub fn create_graphics_pipeline(
+        &self,
+        desc: &GraphicsPipelineDescriptor,
+    ) -> ResourceHandle<GraphicsPipeline> {
+        let pipeline = GraphicsPipeline::new(
+            &self.device,
+            desc,
+            &ImmutableShaderInfo {
+                immutable_samplers: self.immutable_samplers.clone(),
+                yuv_conversion_samplers: self.yuv_immutable_samplers.clone(),
+                max_descriptor_count: self.max_descriptor_count,
+            },
+            self.get_swapchain().surface_resolution,
+        );
         let id = self.graphics_pipelines.create(pipeline);
         ResourceHandle::new(id, self.graphics_pipelines.clone())
-    }   
+    }
 
     /// Returns a read lock to the render swapchain.
     pub fn get_swapchain(&self) -> std::sync::RwLockReadGuard<RenderSwapchain> {
@@ -1214,11 +1230,24 @@ impl Drop for RenderContext {
                 });
             });
 
-            self.graphics_pipelines.clear_all();
-            self.buffer_manager.clear_all();
-            self.texture_manager.clear_all();
+            // self.graphics_pipelines.clear_all();
+            // self.buffer_manager.clear_all();
+            // self.texture_manager.clear_all();
+
+            for sampler in self.immutable_samplers.values() {
+                self.device.destroy_sampler(*sampler, None);
+            }
+
+            for (conversion, sampler) in self.yuv_immutable_samplers.values() {
+                self.device
+                    .destroy_sampler_ycbcr_conversion(*conversion, None);
+                self.device.destroy_sampler(*sampler, None);
+            }
 
             self.device.destroy_command_pool(self.pool, None);
+            self.device
+                .device_wait_idle()
+                .expect("Failed to wait device idle!");
             self.device.destroy_device(None);
             self.surface_loader.destroy_surface(self.surface, None);
             self.debug_utils_loader
@@ -1227,7 +1256,6 @@ impl Drop for RenderContext {
         }
     }
 }
-
 
 fn create_immutable_samplers(device: &ash::Device) -> HashMap<SamplerDesc, vk::Sampler> {
     let texel_filters = [vk::Filter::NEAREST, vk::Filter::LINEAR];
@@ -1277,7 +1305,9 @@ fn create_immutable_samplers(device: &ash::Device) -> HashMap<SamplerDesc, vk::S
     result
 }
 
-fn create_immutable_yuv_samplers(device: &ash::Device) -> HashMap<(vk::Format, SamplerDesc), (vk::SamplerYcbcrConversion, vk::Sampler)> {
+fn create_immutable_yuv_samplers(
+    device: &ash::Device,
+) -> HashMap<(vk::Format, SamplerDesc), (vk::SamplerYcbcrConversion, vk::Sampler)> {
     let mut result = HashMap::new();
 
     let formats = [
@@ -1288,60 +1318,58 @@ fn create_immutable_yuv_samplers(device: &ash::Device) -> HashMap<(vk::Format, S
     ];
 
     for format in formats {
-        
-    let sampler_conversion = unsafe {
-        device
-            .create_sampler_ycbcr_conversion(
-                &vk::SamplerYcbcrConversionCreateInfo::default()
-                    .ycbcr_model(vk::SamplerYcbcrModelConversion::YCBCR_709)
-                    .ycbcr_range(vk::SamplerYcbcrRange::ITU_NARROW)
-                    .components(vk::ComponentMapping {
-                        r: vk::ComponentSwizzle::IDENTITY,
-                        g: vk::ComponentSwizzle::IDENTITY,
-                        b: vk::ComponentSwizzle::IDENTITY,
-                        a: vk::ComponentSwizzle::IDENTITY,
-                    })
-                    .chroma_filter(vk::Filter::LINEAR)
-                    .x_chroma_offset(vk::ChromaLocation::MIDPOINT)
-                    .y_chroma_offset(vk::ChromaLocation::MIDPOINT)
-                    .force_explicit_reconstruction(false)
-                    .format(format),
-                None,
-            )
-            .unwrap()
-    };
+        let sampler_conversion = unsafe {
+            device
+                .create_sampler_ycbcr_conversion(
+                    &vk::SamplerYcbcrConversionCreateInfo::default()
+                        .ycbcr_model(vk::SamplerYcbcrModelConversion::YCBCR_709)
+                        .ycbcr_range(vk::SamplerYcbcrRange::ITU_NARROW)
+                        .components(vk::ComponentMapping {
+                            r: vk::ComponentSwizzle::IDENTITY,
+                            g: vk::ComponentSwizzle::IDENTITY,
+                            b: vk::ComponentSwizzle::IDENTITY,
+                            a: vk::ComponentSwizzle::IDENTITY,
+                        })
+                        .chroma_filter(vk::Filter::LINEAR)
+                        .x_chroma_offset(vk::ChromaLocation::MIDPOINT)
+                        .y_chroma_offset(vk::ChromaLocation::MIDPOINT)
+                        .force_explicit_reconstruction(false)
+                        .format(format),
+                    None,
+                )
+                .unwrap()
+        };
 
-    let mut conversion_info =
-        vk::SamplerYcbcrConversionInfo::default().conversion(sampler_conversion);
+        let mut conversion_info =
+            vk::SamplerYcbcrConversionInfo::default().conversion(sampler_conversion);
 
-    let desc = SamplerDesc {
-        texel_filter: vk::Filter::LINEAR,
-        mipmap_mode: vk::SamplerMipmapMode::LINEAR,
-        address_modes: vk::SamplerAddressMode::CLAMP_TO_EDGE,
-    };
+        let desc = SamplerDesc {
+            texel_filter: vk::Filter::LINEAR,
+            mipmap_mode: vk::SamplerMipmapMode::LINEAR,
+            address_modes: vk::SamplerAddressMode::CLAMP_TO_EDGE,
+        };
 
-    let sampler = unsafe {
-        device
-            .create_sampler(
-                &vk::SamplerCreateInfo::default()
-                    .mag_filter(desc.texel_filter)
-                    .min_filter(desc.texel_filter)
-                    .mipmap_mode(desc.mipmap_mode)
-                    .address_mode_u(desc.address_modes)
-                    .address_mode_v(desc.address_modes)
-                    .address_mode_w(desc.address_modes)
-                    .max_lod(vk::LOD_CLAMP_NONE)
-                    .max_anisotropy(16.0)
-                    .anisotropy_enable(false)
-                    .unnormalized_coordinates(false)
-                    .push_next(&mut conversion_info),
-                None,
-            )
-            .unwrap()
-    };
-    result
-    .insert((format, desc), (sampler_conversion, sampler));
+        let sampler = unsafe {
+            device
+                .create_sampler(
+                    &vk::SamplerCreateInfo::default()
+                        .mag_filter(desc.texel_filter)
+                        .min_filter(desc.texel_filter)
+                        .mipmap_mode(desc.mipmap_mode)
+                        .address_mode_u(desc.address_modes)
+                        .address_mode_v(desc.address_modes)
+                        .address_mode_w(desc.address_modes)
+                        .max_lod(vk::LOD_CLAMP_NONE)
+                        .max_anisotropy(16.0)
+                        .anisotropy_enable(false)
+                        .unnormalized_coordinates(false)
+                        .push_next(&mut conversion_info),
+                    None,
+                )
+                .unwrap()
+        };
+        result.insert((format, desc), (sampler_conversion, sampler));
     }
 
-   result
+    result
 }

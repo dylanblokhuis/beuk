@@ -77,8 +77,8 @@ impl Canvas {
             &BufferDescriptor {
                 debug_name: "vertices",
                 location: gpu_allocator::MemoryLocation::GpuOnly,
-                size: (std::mem::size_of::<Vertex>() * 3) as u64,
                 usage: BufferUsageFlags::VERTEX_BUFFER,
+                ..Default::default()
             },
             bytemuck::cast_slice(&[
                 Vertex {
@@ -101,14 +101,15 @@ impl Canvas {
             &BufferDescriptor {
                 debug_name: "indices",
                 location: gpu_allocator::MemoryLocation::GpuOnly,
-                size: (std::mem::size_of::<u16>() * 3) as u64,
                 usage: BufferUsageFlags::INDEX_BUFFER,
+                ..Default::default()
             },
             bytemuck::cast_slice(&[0u16, 1, 2]),
             0,
         );
 
-        let swapchain = ctx.get_swapchain();
+        let swapchain: std::sync::RwLockReadGuard<'_, beuk::ctx::RenderSwapchain> =
+            ctx.get_swapchain();
         let pipeline_handle = ctx.create_graphics_pipeline(&GraphicsPipelineDescriptor {
             vertex_shader: Shader::from_source_text(
                 &ctx.device,
@@ -194,7 +195,9 @@ impl Canvas {
 
                 ctx.begin_rendering(command_buffer, color_attachments, Some(depth_attachment));
 
-                ctx.graphics_pipelines.get(self.pipeline_handle.id()).unwrap()
+                ctx.graphics_pipelines
+                    .get(&self.pipeline_handle)
+                    .unwrap()
                     .bind(&ctx.device, command_buffer);
 
                 ctx.device.cmd_bind_vertex_buffers(
@@ -202,7 +205,7 @@ impl Canvas {
                     0,
                     std::slice::from_ref(
                         &ctx.buffer_manager
-                            .get(self.vertex_buffer.id())
+                            .get(&self.vertex_buffer)
                             .unwrap()
                             .buffer(),
                     ),
@@ -210,10 +213,7 @@ impl Canvas {
                 );
                 ctx.device.cmd_bind_index_buffer(
                     command_buffer,
-                    ctx.buffer_manager
-                        .get(self.index_buffer.id())
-                        .unwrap()
-                        .buffer(),
+                    ctx.buffer_manager.get(&self.index_buffer).unwrap().buffer(),
                     0,
                     vk::IndexType::UINT16,
                 );

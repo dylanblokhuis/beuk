@@ -11,7 +11,6 @@ use beuk::{
 };
 use image::EncodableLayout;
 use raw_window_handle::{HasRawDisplayHandle, HasRawWindowHandle};
-use tracing_subscriber::prelude::__tracing_subscriber_SubscriberExt;
 use winit::{
     event::{Event, WindowEvent},
     event_loop::EventLoop,
@@ -201,7 +200,7 @@ impl Canvas {
         let view = ctx.get_texture_view(&texture_handle).unwrap();
 
         unsafe {
-            let pipeline = ctx.graphics_pipelines.get(pipeline_handle.id()).unwrap();
+            let pipeline = ctx.graphics_pipelines.get(&pipeline_handle).unwrap();
             ctx.device.update_descriptor_sets(
                 &[vk::WriteDescriptorSet::default()
                     .dst_set(pipeline.descriptor_sets[0])
@@ -264,7 +263,7 @@ impl Canvas {
                 ctx.begin_rendering(command_buffer, color_attachments, Some(depth_attachment));
 
                 ctx.graphics_pipelines
-                    .get(self.pipeline_handle.id())
+                    .get(&self.pipeline_handle)
                     .unwrap()
                     .bind(&ctx.device, command_buffer);
 
@@ -273,7 +272,7 @@ impl Canvas {
                     0,
                     std::slice::from_ref(
                         &ctx.buffer_manager
-                            .get(self.vertex_buffer.id())
+                            .get(&self.vertex_buffer)
                             .unwrap()
                             .buffer(),
                     ),
@@ -281,10 +280,7 @@ impl Canvas {
                 );
                 ctx.device.cmd_bind_index_buffer(
                     command_buffer,
-                    ctx.buffer_manager
-                        .get(self.index_buffer.id())
-                        .unwrap()
-                        .buffer(),
+                    ctx.buffer_manager.get(&self.index_buffer).unwrap().buffer(),
                     0,
                     vk::IndexType::UINT32,
                 );

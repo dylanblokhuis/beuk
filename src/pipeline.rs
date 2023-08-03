@@ -537,13 +537,48 @@ pub struct GraphicsPipeline {
 }
 
 impl ResourceHooks for GraphicsPipeline {
-    fn cleanup(&mut self, device: std::sync::Arc<ash::Device>, allocator: std::sync::Arc<std::sync::Mutex<gpu_allocator::vulkan::Allocator>>) {
+    fn cleanup(
+        &mut self,
+        device: std::sync::Arc<ash::Device>,
+        allocator: std::sync::Arc<std::sync::Mutex<gpu_allocator::vulkan::Allocator>>,
+    ) {
         drop(allocator);
         self.destroy(&device)
     }
 
-    fn on_swapchain_resize(&mut self, device: std::sync::Arc<ash::Device>, allocator: std::sync::Arc<std::sync::Mutex<gpu_allocator::vulkan::Allocator>>, new_surface_resolution: vk::Extent2D) {
-        println!("Resize!");
+    fn on_swapchain_resize(
+        &mut self,
+        _device: std::sync::Arc<ash::Device>,
+        _allocator: std::sync::Arc<std::sync::Mutex<gpu_allocator::vulkan::Allocator>>,
+        old_surface_resolution: vk::Extent2D,
+        new_surface_resolution: vk::Extent2D,
+    ) {
+        if self.pipeline == Default::default() {
+            return;
+        }
+
+        if self.viewports.len() != 1 {
+            return;
+        }
+
+        if self.viewports[0].width == old_surface_resolution.width as f32
+            && self.viewports[0].height == old_surface_resolution.height as f32
+        {
+            return;
+        }
+
+        self.viewports[0] = vk::Viewport {
+            x: 0.0,
+            y: 0.0,
+            width: new_surface_resolution.width as f32,
+            height: new_surface_resolution.height as f32,
+            min_depth: 0.0,
+            max_depth: 1.0,
+        };
+        self.scissors[0] = vk::Rect2D {
+            offset: vk::Offset2D { x: 0, y: 0 },
+            extent: new_surface_resolution,
+        };
     }
 }
 
@@ -774,6 +809,10 @@ impl GraphicsPipeline {
     }
 
     pub fn destroy(&self, device: &Device) {
+        if self.pipeline == Default::default() {
+            return;
+        }
+
         unsafe {
             device.destroy_pipeline_layout(self.layout, None);
             device.destroy_pipeline(self.pipeline, None);
@@ -781,9 +820,11 @@ impl GraphicsPipeline {
             device.destroy_shader_module(self.vertex_shader.module, None);
             device.destroy_shader_module(self.fragment_shader.module, None);
 
-            device
-                .free_descriptor_sets(self.descriptor_pool, &self.descriptor_sets)
-                .unwrap();
+            if !self.descriptor_sets.is_empty() {
+                device
+                    .free_descriptor_sets(self.descriptor_pool, &self.descriptor_sets)
+                    .unwrap();
+            }
             device.destroy_descriptor_pool(self.descriptor_pool, None);
             for layout in self.descriptor_set_layouts.iter() {
                 device.destroy_descriptor_set_layout(*layout, None);

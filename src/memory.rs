@@ -26,7 +26,14 @@ unsafe impl<T> Sync for ResourceInner<T> {}
 /// Trait for resources that need to be cleaned up when they are destroyed.
 pub trait ResourceHooks {
     fn cleanup(&mut self, device: Arc<ash::Device>, allocator: Arc<Mutex<Allocator>>);
-    fn on_swapchain_resize(&mut self, device: Arc<ash::Device>, allocator: Arc<Mutex<Allocator>>, new_surface_resolution: Extent2D) {}
+    fn on_swapchain_resize(
+        &mut self,
+        _device: Arc<ash::Device>,
+        _allocator: Arc<Mutex<Allocator>>,
+        _old_surface_resolution: Extent2D,
+        _new_surface_resolution: Extent2D,
+    ) {
+    }
 }
 
 #[derive(Debug)]
@@ -46,7 +53,7 @@ impl<T: Default + Debug + ResourceHooks> ResourceHandle<T> {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct ResourceId {
     index: Index,
     generation: Generation,
@@ -89,10 +96,14 @@ impl<T: Debug> Debug for ResourceManager<T> {
 }
 
 impl<T: Default + Debug + ResourceHooks> ResourceManager<T> {
-    pub fn new(device: Arc<ash::Device>, allocator: Arc<Mutex<Allocator>>) -> Self {
-        let queue = ArrayQueue::new(1024);
-        let resources = Arc::new(boxcar::Vec::with_capacity(1024));
-        for i in 0..1024 {
+    pub fn new(
+        device: Arc<ash::Device>,
+        allocator: Arc<Mutex<Allocator>>,
+        capacity: usize,
+    ) -> Self {
+        let queue = ArrayQueue::new(capacity);
+        let resources = Arc::new(boxcar::Vec::with_capacity(capacity));
+        for i in 0..capacity {
             queue.push(i).unwrap();
             resources.push(ResourceInner(UnsafeCell::new(Resource {
                 inner: Default::default(),
@@ -110,14 +121,15 @@ impl<T: Default + Debug + ResourceHooks> ResourceManager<T> {
     }
 
     #[tracing::instrument(skip(self))]
-    pub fn get(&self, handle: ResourceId) -> Option<&T> {
-        let resource = self.resources.get(handle.index);
+    pub fn get(&self, handle: &ResourceHandle<T>) -> Option<&T> {
+        let ResourceId { index, generation } = handle.id();
+        let resource = self.resources.get(index);
         let Some(lock) = resource else {
             return None;
         };
 
         let data = unsafe { &*lock.0.get() };
-        if handle.generation != data.generation {
+        if generation != data.generation {
             return None;
         }
 
@@ -125,14 +137,15 @@ impl<T: Default + Debug + ResourceHooks> ResourceManager<T> {
     }
 
     #[tracing::instrument(skip(self))]
-    pub fn get_mut(&self, handle: ResourceId) -> Option<&mut T> {
-        let resource = self.resources.get(handle.index);
+    pub fn get_mut(&self, handle: &ResourceHandle<T>) -> Option<&mut T> {
+        let ResourceId { index, generation } = handle.id();
+        let resource = self.resources.get(index);
         let Some(lock) = resource else {
             return None;
         };
 
         let data = unsafe { &mut *lock.0.get() };
-        if handle.generation != data.generation {
+        if generation != data.generation {
             return None;
         }
 
@@ -189,19 +202,27 @@ impl<T: Default + Debug + ResourceHooks> ResourceManager<T> {
     pub fn clear_all(&self) {
         for (_, resource) in self.resources.iter() {
             let data = unsafe { &mut *resource.0.get() };
-            data.inner
-                .cleanup(self.device.clone(), self.allocator.clone());
+
+            // data.inner
+            //     .cleanup(self.device.clone(), self.allocator.clone());
             data.inner = Default::default();
         }
     }
 
     /// Call the swapchain resize hooks for all resources.
-    pub fn call_swapchain_resize_hooks(&self, surface_resolution: Extent2D) {
-        println!("yo!");
+    pub fn call_swapchain_resize_hooks(
+        &self,
+        old_surface_resolution: Extent2D,
+        new_surface_resolution: Extent2D,
+    ) {
         for (_, resource) in self.resources.iter() {
             let data = unsafe { &mut *resource.0.get() };
-            data.inner
-                .on_swapchain_resize(self.device.clone(), self.allocator.clone(), surface_resolution);
+            data.inner.on_swapchain_resize(
+                self.device.clone(),
+                self.allocator.clone(),
+                old_surface_resolution,
+                new_surface_resolution,
+            );
         }
     }
 }
