@@ -10,9 +10,9 @@ use ash::{
     },
     vk::{
         CommandBuffer, DebugUtilsMessageSeverityFlagsEXT, DeviceSize, ExtDescriptorIndexingFn,
-        ImageView, KhrSamplerYcbcrConversionFn, PhysicalDeviceBufferDeviceAddressFeaturesKHR,
-        PhysicalDeviceDescriptorIndexingFeatures, PhysicalDeviceSamplerYcbcrConversionFeatures,
-        PresentModeKHR, SurfaceKHR, API_VERSION_1_2,
+        Fence, ImageView, KhrSamplerYcbcrConversionFn,
+        PhysicalDeviceBufferDeviceAddressFeaturesKHR, PhysicalDeviceDescriptorIndexingFeatures,
+        PhysicalDeviceSamplerYcbcrConversionFeatures, PresentModeKHR, SurfaceKHR, API_VERSION_1_2,
     },
 };
 use ash::{vk, Entry};
@@ -119,7 +119,7 @@ pub struct RenderContext {
     pub yuv_immutable_samplers:
         Arc<HashMap<(vk::Format, SamplerDesc), (vk::SamplerYcbcrConversion, vk::Sampler)>>,
     pub allocator: Arc<Mutex<Allocator>>,
-    pub threaded_command_buffers: Arc<RwLock<HashMap<usize, CommandBuffer>>>,
+    pub threaded_command_buffers: Arc<RwLock<HashMap<usize, (CommandBuffer, vk::Fence)>>>,
     pub render_swapchain: Arc<RwLock<RenderSwapchain>>,
 
     pub entry: Entry,
@@ -138,14 +138,11 @@ pub struct RenderContext {
     pub surface: vk::SurfaceKHR,
 
     pub pool: vk::CommandPool,
-    pub draw_command_buffer: vk::CommandBuffer,
-    pub setup_command_buffer: vk::CommandBuffer,
+    pub main_command_buffer: vk::CommandBuffer,
+    pub main_commands_reuse_fence: vk::Fence,
 
     pub present_complete_semaphore: vk::Semaphore,
     pub rendering_complete_semaphore: vk::Semaphore,
-
-    pub draw_commands_reuse_fence: vk::Fence,
-    pub setup_commands_reuse_fence: vk::Fence,
 }
 
 #[derive(Clone, Copy)]
@@ -333,15 +330,14 @@ impl RenderContext {
             let pool = device.create_command_pool(&pool_create_info, None).unwrap();
 
             let command_buffer_allocate_info = vk::CommandBufferAllocateInfo::default()
-                .command_buffer_count(2)
+                .command_buffer_count(1)
                 .command_pool(pool)
                 .level(vk::CommandBufferLevel::PRIMARY);
 
             let command_buffers = device
                 .allocate_command_buffers(&command_buffer_allocate_info)
                 .unwrap();
-            let setup_command_buffer = command_buffers[0];
-            let draw_command_buffer = command_buffers[1];
+            let main_command_buffer = command_buffers[0];
 
             let render_swapchain = Self::create_swapchain(
                 &instance,
@@ -355,10 +351,7 @@ impl RenderContext {
             let fence_create_info =
                 vk::FenceCreateInfo::default().flags(vk::FenceCreateFlags::SIGNALED);
 
-            let draw_commands_reuse_fence = device
-                .create_fence(&fence_create_info, None)
-                .expect("Create fence failed.");
-            let setup_commands_reuse_fence = device
+            let main_commands_reuse_fence = device
                 .create_fence(&fence_create_info, None)
                 .expect("Create fence failed.");
 
@@ -423,13 +416,11 @@ impl RenderContext {
                 present_queue,
 
                 pool,
-                draw_command_buffer,
-                setup_command_buffer,
+                main_command_buffer,
 
                 present_complete_semaphore,
                 rendering_complete_semaphore,
-                draw_commands_reuse_fence,
-                setup_commands_reuse_fence,
+                main_commands_reuse_fence,
                 surface,
                 debug_call_back,
                 debug_utils_loader,
@@ -668,6 +659,16 @@ impl RenderContext {
         }
     }
 
+    /// this can only run on a thread created by the thread pool
+    pub fn get_command_buffer(&self) -> (vk::CommandBuffer, Fence) {
+        if let Some(thread_index) = rayon::current_thread_index() {
+            let threaded_command_buffers = self.threaded_command_buffers.read().unwrap();
+            *threaded_command_buffers.get(&thread_index).unwrap()
+        } else {
+            (self.main_command_buffer, self.main_commands_reuse_fence)
+        }
+    }
+
     /// Submits the command buffer to the queue and waits for it to finish.
     pub fn submit(&self, command_buffer: &vk::CommandBuffer, fence: vk::Fence) {
         let submit_info =
@@ -693,18 +694,15 @@ impl RenderContext {
     /// Submits the command buffer to the present queue with corresponding semaphores and waits for it to finish.
     #[tracing::instrument(skip(self))]
     pub fn present_submit(&self, present_index: u32) {
+        let (command_buffer, fence) = self.get_command_buffer();
         let submit_info = vk::SubmitInfo::default()
             .wait_semaphores(std::slice::from_ref(&self.present_complete_semaphore))
             .wait_dst_stage_mask(&[vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT])
-            .command_buffers(std::slice::from_ref(&self.draw_command_buffer))
+            .command_buffers(std::slice::from_ref(&command_buffer))
             .signal_semaphores(std::slice::from_ref(&self.rendering_complete_semaphore));
         unsafe {
             self.device
-                .queue_submit(
-                    self.present_queue,
-                    &[submit_info],
-                    self.draw_commands_reuse_fence,
-                )
+                .queue_submit(self.present_queue, &[submit_info], fence)
                 .expect("queue submit failed.");
             self.device.queue_wait_idle(self.present_queue).unwrap();
 
@@ -759,64 +757,60 @@ impl RenderContext {
         present_index: u32,
         f: F,
     ) {
-        self.record(
-            self.draw_command_buffer,
-            self.draw_commands_reuse_fence,
-            |ctx, command_buffer| unsafe {
-                let render_swapchain = ctx.get_swapchain();
-                let layout_transition_barriers = vk::ImageMemoryBarrier::default()
-                    .image(render_swapchain.present_images[present_index as usize])
-                    .src_access_mask(vk::AccessFlags::COLOR_ATTACHMENT_READ)
-                    .dst_access_mask(vk::AccessFlags::COLOR_ATTACHMENT_WRITE)
-                    .old_layout(vk::ImageLayout::UNDEFINED)
-                    .new_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
-                    .subresource_range(
-                        vk::ImageSubresourceRange::default()
-                            .aspect_mask(vk::ImageAspectFlags::COLOR)
-                            .layer_count(1)
-                            .level_count(1),
-                    );
-
-                self.device.cmd_pipeline_barrier(
-                    self.draw_command_buffer,
-                    vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
-                    vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
-                    vk::DependencyFlags::empty(),
-                    &[],
-                    &[],
-                    &[layout_transition_barriers],
+        let (command_buffer, fence) = self.get_command_buffer();
+        self.record(command_buffer, fence, |ctx, command_buffer| unsafe {
+            let render_swapchain = ctx.get_swapchain();
+            let layout_transition_barriers = vk::ImageMemoryBarrier::default()
+                .image(render_swapchain.present_images[present_index as usize])
+                .src_access_mask(vk::AccessFlags::COLOR_ATTACHMENT_READ)
+                .dst_access_mask(vk::AccessFlags::COLOR_ATTACHMENT_WRITE)
+                .old_layout(vk::ImageLayout::UNDEFINED)
+                .new_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
+                .subresource_range(
+                    vk::ImageSubresourceRange::default()
+                        .aspect_mask(vk::ImageAspectFlags::COLOR)
+                        .layer_count(1)
+                        .level_count(1),
                 );
 
-                let present_image_view =
-                    render_swapchain.present_image_views[present_index as usize];
-                let depth_image_view = render_swapchain.depth_image_view;
+            self.device.cmd_pipeline_barrier(
+                command_buffer,
+                vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
+                vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
+                vk::DependencyFlags::empty(),
+                &[],
+                &[],
+                &[layout_transition_barriers],
+            );
 
-                f(ctx, command_buffer, present_image_view, depth_image_view);
+            let present_image_view = render_swapchain.present_image_views[present_index as usize];
+            let depth_image_view = render_swapchain.depth_image_view;
 
-                let layout_transition_barriers = vk::ImageMemoryBarrier::default()
-                    .image(render_swapchain.present_images[present_index as usize])
-                    .src_access_mask(vk::AccessFlags::COLOR_ATTACHMENT_WRITE)
-                    .dst_access_mask(vk::AccessFlags::COLOR_ATTACHMENT_READ)
-                    .old_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
-                    .new_layout(vk::ImageLayout::PRESENT_SRC_KHR)
-                    .subresource_range(
-                        vk::ImageSubresourceRange::default()
-                            .aspect_mask(vk::ImageAspectFlags::COLOR)
-                            .layer_count(1)
-                            .level_count(1),
-                    );
+            f(ctx, command_buffer, present_image_view, depth_image_view);
 
-                self.device.cmd_pipeline_barrier(
-                    command_buffer,
-                    vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
-                    vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
-                    vk::DependencyFlags::empty(),
-                    &[],
-                    &[],
-                    &[layout_transition_barriers],
+            let layout_transition_barriers = vk::ImageMemoryBarrier::default()
+                .image(render_swapchain.present_images[present_index as usize])
+                .src_access_mask(vk::AccessFlags::COLOR_ATTACHMENT_WRITE)
+                .dst_access_mask(vk::AccessFlags::COLOR_ATTACHMENT_READ)
+                .old_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
+                .new_layout(vk::ImageLayout::PRESENT_SRC_KHR)
+                .subresource_range(
+                    vk::ImageSubresourceRange::default()
+                        .aspect_mask(vk::ImageAspectFlags::COLOR)
+                        .layer_count(1)
+                        .level_count(1),
                 );
-            },
-        );
+
+            self.device.cmd_pipeline_barrier(
+                command_buffer,
+                vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
+                vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
+                vk::DependencyFlags::empty(),
+                &[],
+                &[],
+                &[layout_transition_barriers],
+            );
+        });
     }
 
     /// Example
@@ -932,8 +926,11 @@ impl RenderContext {
     pub fn create_command_thread_pool(
         device: Device,
         queue_family_index: u32,
-    ) -> (ThreadPool, Arc<RwLock<HashMap<usize, CommandBuffer>>>) {
-        let m_command_buffers: Arc<RwLock<HashMap<usize, CommandBuffer>>> =
+    ) -> (
+        ThreadPool,
+        Arc<RwLock<HashMap<usize, (CommandBuffer, Fence)>>>,
+    ) {
+        let m_command_buffers: Arc<RwLock<HashMap<usize, (CommandBuffer, Fence)>>> =
             Arc::new(RwLock::new(HashMap::new()));
         let m_command_buffers_clone = m_command_buffers.clone();
 
@@ -951,7 +948,7 @@ impl RenderContext {
                     let command_buffer_allocate_info = vk::CommandBufferAllocateInfo::default()
                         .command_buffer_count(1)
                         .command_pool(*pool.borrow())
-                        .level(vk::CommandBufferLevel::SECONDARY);
+                        .level(vk::CommandBufferLevel::PRIMARY);
 
                     let command_buffers = unsafe {
                         device
@@ -959,10 +956,20 @@ impl RenderContext {
                             .unwrap()
                     };
 
+                    let fence = unsafe {
+                        device
+                            .create_fence(
+                                &vk::FenceCreateInfo::default()
+                                    .flags(vk::FenceCreateFlags::SIGNALED),
+                                None,
+                            )
+                            .expect("Create fence failed.")
+                    };
+
                     m_command_buffers
                         .write()
                         .unwrap()
-                        .insert(x, command_buffers[0]);
+                        .insert(x, (command_buffers[0], fence));
                 });
             })
             .build()
@@ -977,40 +984,37 @@ impl RenderContext {
         buffer: &ResourceHandle<Buffer>,
         texture: &ResourceHandle<Texture>,
     ) {
-        self.record_submit(
-            self.setup_command_buffer,
-            self.setup_commands_reuse_fence,
-            |ctx, command_buffer| unsafe {
-                let texture = ctx.texture_manager.get_mut(texture).unwrap();
-                texture.transition(
-                    &ctx.device,
-                    command_buffer,
-                    &TransitionDesc {
-                        new_layout: vk::ImageLayout::TRANSFER_DST_OPTIMAL,
-                        new_access_mask: vk::AccessFlags::TRANSFER_WRITE,
-                        new_stage_mask: vk::PipelineStageFlags::TRANSFER,
-                    },
-                );
+        let (command_buffer, fence) = self.get_command_buffer();
+        self.record_submit(command_buffer, fence, |ctx, command_buffer| unsafe {
+            let texture = ctx.texture_manager.get_mut(texture).unwrap();
+            texture.transition(
+                &ctx.device,
+                command_buffer,
+                &TransitionDesc {
+                    new_layout: vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+                    new_access_mask: vk::AccessFlags::TRANSFER_WRITE,
+                    new_stage_mask: vk::PipelineStageFlags::TRANSFER,
+                },
+            );
 
-                ctx.device.cmd_copy_buffer_to_image(
-                    command_buffer,
-                    ctx.buffer_manager.get(&buffer).unwrap().buffer(),
-                    texture.image,
-                    texture.layout,
-                    &[vk::BufferImageCopy::default()
-                        .buffer_offset(0)
-                        .buffer_row_length(texture.extent.width)
-                        .buffer_image_height(0)
-                        .image_subresource(vk::ImageSubresourceLayers {
-                            aspect_mask: vk::ImageAspectFlags::COLOR,
-                            mip_level: 0,
-                            base_array_layer: 0,
-                            layer_count: 1,
-                        })
-                        .image_extent(texture.extent)],
-                );
-            },
-        );
+            ctx.device.cmd_copy_buffer_to_image(
+                command_buffer,
+                ctx.buffer_manager.get(buffer).unwrap().buffer(),
+                texture.image,
+                texture.layout,
+                &[vk::BufferImageCopy::default()
+                    .buffer_offset(0)
+                    .buffer_row_length(texture.extent.width)
+                    .buffer_image_height(0)
+                    .image_subresource(vk::ImageSubresourceLayers {
+                        aspect_mask: vk::ImageAspectFlags::COLOR,
+                        mip_level: 0,
+                        base_array_layer: 0,
+                        layer_count: 1,
+                    })
+                    .image_extent(texture.extent)],
+            );
+        });
     }
 
     // pub fn copy_buffer_to_texture(&self, buffer: &Buffer, texture: &Image) {
@@ -1129,8 +1133,8 @@ impl RenderContext {
             staging_buffer.copy_from_slice(data, offset);
 
             self.record_submit(
-                self.setup_command_buffer,
-                self.setup_commands_reuse_fence,
+                self.main_command_buffer,
+                self.main_commands_reuse_fence,
                 |ctx: &RenderContext, command_buffer| unsafe {
                     let buffer = self.buffer_manager.get(&handle).unwrap();
                     ctx.device.cmd_copy_buffer(
@@ -1213,9 +1217,7 @@ impl Drop for RenderContext {
             self.device
                 .destroy_semaphore(self.rendering_complete_semaphore, None);
             self.device
-                .destroy_fence(self.draw_commands_reuse_fence, None);
-            self.device
-                .destroy_fence(self.setup_commands_reuse_fence, None);
+                .destroy_fence(self.main_commands_reuse_fence, None);
 
             self.cleanup_swapchain();
 
@@ -1224,8 +1226,9 @@ impl Drop for RenderContext {
                     let pool = pool.take();
                     let mut command_buffer_g = self.threaded_command_buffers.write().unwrap();
                     let command_buffer = command_buffer_g.get(&ctx.index());
-                    if let Some(command_buffer) = command_buffer {
+                    if let Some((command_buffer, fence)) = command_buffer {
                         self.device.free_command_buffers(pool, &[*command_buffer]);
+                        self.device.destroy_fence(*fence, None);
                     }
                     self.device.destroy_command_pool(pool, None);
                     command_buffer_g.remove(&ctx.index());

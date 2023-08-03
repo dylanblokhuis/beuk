@@ -52,6 +52,7 @@ fn main() {
         }
         Event::RedrawRequested(_) => {
             // tx.send(()).unwrap();
+
             canvas.draw(&ctx);
         }
         _ => (),
