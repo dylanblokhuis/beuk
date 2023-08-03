@@ -11,6 +11,7 @@ use beuk::{
 };
 use image::EncodableLayout;
 use raw_window_handle::{HasRawDisplayHandle, HasRawWindowHandle};
+use tracing_subscriber::prelude::__tracing_subscriber_SubscriberExt;
 use winit::{
     event::{Event, WindowEvent},
     event_loop::EventLoop,
