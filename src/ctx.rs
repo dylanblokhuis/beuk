@@ -644,7 +644,7 @@ impl RenderContext {
         &self,
         command_buffer: vk::CommandBuffer,
         fence: vk::Fence,
-        f: impl FnOnce(&Self, vk::CommandBuffer) + Send + Sync,
+        f: impl FnOnce(&Self, vk::CommandBuffer),
     ) {
         unsafe {
             self.device
@@ -701,7 +701,7 @@ impl RenderContext {
         }
     }
 
-    pub fn record_submit(&self, f: impl FnOnce(&Self, vk::CommandBuffer) + Send + Sync) {
+    pub fn record_submit(&self, f: impl FnOnce(&Self, vk::CommandBuffer)) {
         let (command_buffer, fence) = self.get_command_buffer();
         self.record(command_buffer, fence, f);
         self.submit(command_buffer, fence);
