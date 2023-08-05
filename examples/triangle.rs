@@ -18,12 +18,12 @@ use winit::{
 };
 
 fn main() {
-    // simple_logger::SimpleLogger::new().init().unwrap();
-    // use tracing_subscriber::layer::SubscriberExt;
-    // tracing::subscriber::set_global_default(
-    //     tracing_subscriber::registry().with(tracing_tracy::TracyLayer::new()),
-    // )
-    // .expect("set up the subscriber");
+    simple_logger::SimpleLogger::new().init().unwrap();
+    use tracing_subscriber::layer::SubscriberExt;
+    tracing::subscriber::set_global_default(
+        tracing_subscriber::registry().with(tracing_tracy::TracyLayer::new()),
+    )
+    .expect("set up the subscriber");
 
     let event_loop = EventLoop::new();
 
@@ -47,11 +47,20 @@ fn main() {
             window_id,
         } if window_id == window.id() => control_flow.set_exit(),
 
+        Event::WindowEvent { event, .. } => match event {
+            WindowEvent::ScaleFactorChanged { new_inner_size, .. } => {
+                ctx.recreate_swapchain(new_inner_size.width, new_inner_size.height);
+            }
+            WindowEvent::Resized(size) => {
+                ctx.recreate_swapchain(size.width, size.height);
+            }
+            _ => (),
+        },
+
         Event::MainEventsCleared => {
             window.request_redraw();
         }
         Event::RedrawRequested(_) => {
-            // tx.send(()).unwrap();
             canvas.draw(&ctx);
         }
         _ => (),
@@ -157,6 +166,7 @@ impl Canvas {
             blend: vec![BlendState::ALPHA_BLENDING],
             multisample: beuk::pipeline::MultisampleState::default(),
         });
+
         Self {
             pipeline_handle,
             vertex_buffer,
