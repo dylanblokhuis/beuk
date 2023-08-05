@@ -121,6 +121,7 @@ pub struct RenderContext {
     pub allocator: Arc<Mutex<Allocator>>,
     pub threaded_command_buffers: Arc<RwLock<HashMap<usize, (CommandBuffer, vk::Fence)>>>,
     pub render_swapchain: Arc<RwLock<RenderSwapchain>>,
+    pub thread_id: std::thread::ThreadId,
 
     pub entry: Entry,
     pub instance: Instance,
@@ -130,10 +131,10 @@ pub struct RenderContext {
     pub debug_utils_loader: DebugUtils,
     pub debug_call_back: vk::DebugUtilsMessengerEXT,
     pub max_descriptor_count: u32,
-    pub command_thread_pool: ThreadPool,
+    pub command_thread_pool: Arc<ThreadPool>,
     pub pdevice: vk::PhysicalDevice,
     pub queue_family_index: u32,
-    pub present_queue: vk::Queue,
+    pub present_queue: Arc<Mutex<vk::Queue>>,
 
     pub surface: vk::SurfaceKHR,
 
@@ -348,11 +349,11 @@ impl RenderContext {
                 desc.present_mode,
             );
 
-            let fence_create_info =
-                vk::FenceCreateInfo::default().flags(vk::FenceCreateFlags::SIGNALED);
-
             let main_commands_reuse_fence = device
-                .create_fence(&fence_create_info, None)
+                .create_fence(
+                    &vk::FenceCreateInfo::default().flags(vk::FenceCreateFlags::SIGNALED),
+                    None,
+                )
                 .expect("Create fence failed.");
 
             let semaphore_create_info = vk::SemaphoreCreateInfo::default();
@@ -366,6 +367,8 @@ impl RenderContext {
 
             let (command_thread_pool, threaded_command_buffers) =
                 Self::create_command_thread_pool(device.clone(), queue_family_index);
+
+            let command_thread_pool = Arc::new(command_thread_pool);
 
             let dynamic_rendering = DynamicRendering::new(&instance, &device);
 
@@ -387,6 +390,9 @@ impl RenderContext {
             let graphics_pipelines =
                 ResourceManager::new(arc_device.clone(), allocator.clone(), 64);
 
+            let present_queue = Arc::new(Mutex::new(present_queue));
+            let thread_id = std::thread::current().id();
+
             Self {
                 allocator,
                 entry,
@@ -403,6 +409,7 @@ impl RenderContext {
                 graphics_pipelines: Arc::new(graphics_pipelines),
                 immutable_samplers: Arc::new(create_immutable_samplers(&device)),
                 yuv_immutable_samplers: Arc::new(create_immutable_yuv_samplers(&device)),
+                thread_id,
                 // TODO: fetch from device
                 max_descriptor_count: {
                     (512 * 1024).min(
@@ -424,7 +431,6 @@ impl RenderContext {
                 surface,
                 debug_call_back,
                 debug_utils_loader,
-                // depth_image_memory,
             }
         }
     }
@@ -593,48 +599,57 @@ impl RenderContext {
     }
 
     #[tracing::instrument(skip(self))]
-    pub fn recreate_swapchain(&self) {
-        unsafe {
-            self.device
-                .device_wait_idle()
-                .expect("Failed to wait device idle!")
+    pub fn recreate_swapchain(&self, width: u32, height: u32) {
+        {
+            let swapchain = self.get_swapchain();
+            if width == swapchain.surface_resolution.width
+                && height == swapchain.surface_resolution.height
+            {
+                return;
+            }
+        }
+
+        let (old_surface_resolution, new_surface_resolution) = {
+            let _guard = self.present_queue.lock().unwrap();
+            unsafe {
+                self.device
+                    .device_wait_idle()
+                    .expect("Failed to wait device idle!")
+            };
+            let old_surface_resolution = self.get_swapchain().surface_resolution;
+            self.cleanup_swapchain();
+            let render_swapchain = {
+                let present_mode = self.get_swapchain().present_mode;
+                Self::create_swapchain(
+                    &self.instance,
+                    &self.device,
+                    self.pdevice,
+                    &self.surface_loader,
+                    self.surface,
+                    present_mode,
+                )
+            };
+            let new_surface_resolution = render_swapchain.surface_resolution;
+            *self.render_swapchain.write().unwrap() = render_swapchain;
+            (old_surface_resolution, new_surface_resolution)
         };
-        let old_surface_resolution = self.get_swapchain().surface_resolution;
-        self.cleanup_swapchain();
-        let render_swapchain = {
-            let present_mode = self.get_swapchain().present_mode;
-            Self::create_swapchain(
-                &self.instance,
-                &self.device,
-                self.pdevice,
-                &self.surface_loader,
-                self.surface,
-                present_mode,
-            )
-        };
-        let new_surface_resolution = render_swapchain.surface_resolution;
-        *self.render_swapchain.write().unwrap() = render_swapchain;
+
         self.graphics_pipelines
             .call_swapchain_resize_hooks(old_surface_resolution, new_surface_resolution);
         self.texture_manager
             .call_swapchain_resize_hooks(old_surface_resolution, new_surface_resolution);
-        // self.pipeline_manager
-        //     .write()
-        //     .unwrap()
-        //     .resize_all_graphics_pipelines(surface_resolution);
     }
 
     pub fn record(
         &self,
         command_buffer: vk::CommandBuffer,
         fence: vk::Fence,
-        f: impl FnOnce(&Self, vk::CommandBuffer),
+        f: impl FnOnce(&Self, vk::CommandBuffer) + Send + Sync,
     ) {
         unsafe {
             self.device
                 .wait_for_fences(&[fence], true, std::u64::MAX)
                 .expect("Wait for fence failed.");
-
             self.device
                 .reset_fences(&[fence])
                 .expect("Reset fences failed.");
@@ -663,32 +678,33 @@ impl RenderContext {
     pub fn get_command_buffer(&self) -> (vk::CommandBuffer, Fence) {
         if let Some(thread_index) = rayon::current_thread_index() {
             let threaded_command_buffers = self.threaded_command_buffers.read().unwrap();
-            *threaded_command_buffers.get(&thread_index).unwrap()
-        } else {
+            *threaded_command_buffers
+                .get(&thread_index)
+                .expect("Command buffer not found inside thread pool.")
+        } else if std::thread::current().id() == self.thread_id {
             (self.main_command_buffer, self.main_commands_reuse_fence)
+        } else {
+            panic!("Command buffer not found inside thread pool.")
         }
     }
 
     /// Submits the command buffer to the queue and waits for it to finish.
-    pub fn submit(&self, command_buffer: &vk::CommandBuffer, fence: vk::Fence) {
-        let submit_info =
-            vk::SubmitInfo::default().command_buffers(std::slice::from_ref(command_buffer));
+    pub fn submit(&self, command_buffer: vk::CommandBuffer, fence: vk::Fence) {
+        let queue = self.present_queue.lock().unwrap();
         unsafe {
+            let submit_info =
+                vk::SubmitInfo::default().command_buffers(std::slice::from_ref(&command_buffer));
             self.device
-                .queue_submit(self.present_queue, &[submit_info], fence)
+                .queue_submit(*queue, &[submit_info], fence)
                 .expect("queue submit failed.");
-            self.device.queue_wait_idle(self.present_queue).unwrap();
+            self.device.queue_wait_idle(*queue).unwrap();
         }
     }
 
-    pub fn record_submit(
-        &self,
-        command_buffer: vk::CommandBuffer,
-        fence: vk::Fence,
-        f: impl FnOnce(&Self, vk::CommandBuffer),
-    ) {
+    pub fn record_submit(&self, f: impl FnOnce(&Self, vk::CommandBuffer) + Send + Sync) {
+        let (command_buffer, fence) = self.get_command_buffer();
         self.record(command_buffer, fence, f);
-        self.submit(&command_buffer, fence);
+        self.submit(command_buffer, fence);
     }
 
     /// Submits the command buffer to the present queue with corresponding semaphores and waits for it to finish.
@@ -701,10 +717,11 @@ impl RenderContext {
             .command_buffers(std::slice::from_ref(&command_buffer))
             .signal_semaphores(std::slice::from_ref(&self.rendering_complete_semaphore));
         unsafe {
+            let queue = self.present_queue.lock().unwrap();
             self.device
-                .queue_submit(self.present_queue, &[submit_info], fence)
+                .queue_submit(*queue, &[submit_info], fence)
                 .expect("queue submit failed.");
-            self.device.queue_wait_idle(self.present_queue).unwrap();
+            self.device.queue_wait_idle(*queue).unwrap();
 
             let wait_semaphors = [self.rendering_complete_semaphore];
             let swapchains = [self.get_swapchain().swapchain];
@@ -717,7 +734,9 @@ impl RenderContext {
             let result = self
                 .get_swapchain()
                 .swapchain_loader
-                .queue_present(self.present_queue, &present_info);
+                .queue_present(*queue, &present_info);
+
+            drop(queue);
 
             let is_resized = match result {
                 Ok(_) => false,
@@ -728,7 +747,7 @@ impl RenderContext {
             };
 
             if is_resized {
-                self.recreate_swapchain();
+                self.recreate_swapchain(0, 0);
             }
         }
     }
@@ -752,7 +771,9 @@ impl RenderContext {
 
     /// Acquires the next image, transitions the image from the swapchain and records the draw command buffer. Returns the present_index
     #[tracing::instrument(skip_all)]
-    pub fn present_record<F: FnOnce(&Self, vk::CommandBuffer, ImageView, ImageView)>(
+    pub fn present_record<
+        F: FnOnce(&Self, vk::CommandBuffer, ImageView, ImageView) + Send + Sync,
+    >(
         &self,
         present_index: u32,
         f: F,
@@ -984,8 +1005,7 @@ impl RenderContext {
         buffer: &ResourceHandle<Buffer>,
         texture: &ResourceHandle<Texture>,
     ) {
-        let (command_buffer, fence) = self.get_command_buffer();
-        self.record_submit(command_buffer, fence, |ctx, command_buffer| unsafe {
+        self.record_submit(|ctx, command_buffer| unsafe {
             let texture = ctx.texture_manager.get_mut(texture).unwrap();
             texture.transition(
                 &ctx.device,
@@ -1132,23 +1152,19 @@ impl RenderContext {
             let staging_buffer = self.buffer_manager.get_mut(&staging_handle).unwrap();
             staging_buffer.copy_from_slice(data, offset);
 
-            self.record_submit(
-                self.main_command_buffer,
-                self.main_commands_reuse_fence,
-                |ctx: &RenderContext, command_buffer| unsafe {
-                    let buffer = self.buffer_manager.get(&handle).unwrap();
-                    ctx.device.cmd_copy_buffer(
-                        command_buffer,
-                        staging_buffer.buffer(),
-                        buffer.buffer(),
-                        &[vk::BufferCopy {
-                            size: desc.size,
-                            src_offset: 0,
-                            dst_offset: offset as DeviceSize,
-                        }],
-                    )
-                },
-            );
+            self.record_submit(|ctx: &RenderContext, command_buffer| unsafe {
+                let buffer = self.buffer_manager.get(&handle).unwrap();
+                ctx.device.cmd_copy_buffer(
+                    command_buffer,
+                    staging_buffer.buffer(),
+                    buffer.buffer(),
+                    &[vk::BufferCopy {
+                        size: desc.size,
+                        src_offset: 0,
+                        dst_offset: offset as DeviceSize,
+                    }],
+                )
+            });
         } else {
             self.buffer_manager
                 .get_mut(&handle)

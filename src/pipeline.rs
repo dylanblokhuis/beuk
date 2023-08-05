@@ -561,8 +561,9 @@ impl ResourceHooks for GraphicsPipeline {
             return;
         }
 
-        if self.viewports[0].width == old_surface_resolution.width as f32
-            && self.viewports[0].height == old_surface_resolution.height as f32
+        // If the viewport isnt the old size, then this pipeline doesnt use the swapchain size for its viewport
+        if self.viewports[0].width != old_surface_resolution.width as f32
+            && self.viewports[0].height != old_surface_resolution.height as f32
         {
             return;
         }
