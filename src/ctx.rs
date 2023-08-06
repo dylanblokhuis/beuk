@@ -999,7 +999,7 @@ impl RenderContext {
         (pool, m_command_buffers_clone)
     }
 
-    #[tracing::instrument(skip(self))]
+    #[tracing::instrument(skip_all, name = "copy_buffer_to_texture")]
     pub fn copy_buffer_to_texture(
         &self,
         buffer: &ResourceHandle<Buffer>,
