@@ -120,7 +120,7 @@ impl<T: Default + Debug + ResourceHooks> ResourceManager<T> {
         }
     }
 
-    #[tracing::instrument(skip(self))]
+    #[tracing::instrument(skip(self, handle))]
     pub fn get(&self, handle: &ResourceHandle<T>) -> Option<&T> {
         let ResourceId { index, generation } = handle.id();
         let resource = self.resources.get(index);
@@ -136,7 +136,7 @@ impl<T: Default + Debug + ResourceHooks> ResourceManager<T> {
         Some(&data.inner)
     }
 
-    #[tracing::instrument(skip(self))]
+    #[tracing::instrument(skip(self, handle))]
     pub fn get_mut(&self, handle: &ResourceHandle<T>) -> Option<&mut T> {
         let ResourceId { index, generation } = handle.id();
         let resource = self.resources.get(index);
@@ -152,7 +152,7 @@ impl<T: Default + Debug + ResourceHooks> ResourceManager<T> {
         Some(&mut data.inner)
     }
 
-    #[tracing::instrument(skip(self))]
+    #[tracing::instrument(skip_all, name = "create")]
     pub fn create(&self, resource: T) -> ResourceId {
         let Some(index) = self.free_indices.pop() else {
             panic!("No more free indices");
@@ -175,7 +175,7 @@ impl<T: Default + Debug + ResourceHooks> ResourceManager<T> {
         }
     }
 
-    #[tracing::instrument(skip(self))]
+    #[tracing::instrument(skip(self, handle))]
     pub fn destroy(&self, handle: ResourceId) -> Result<()> {
         let resource = self.resources.get(handle.index);
         let Some(cell) = resource else {
