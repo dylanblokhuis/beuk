@@ -210,6 +210,7 @@ impl<T: Default + Debug + ResourceHooks> ResourceManager<T> {
     }
 
     /// Call the swapchain resize hooks for all resources.
+    #[tracing::instrument(skip(self))]
     pub fn call_swapchain_resize_hooks(
         &self,
         old_surface_resolution: Extent2D,

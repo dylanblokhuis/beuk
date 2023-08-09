@@ -610,10 +610,10 @@ impl RenderContext {
         }
 
         let (old_surface_resolution, new_surface_resolution) = {
-            let _guard = self.present_queue.lock().unwrap();
+            let present_queue = self.present_queue.lock().unwrap();
             unsafe {
                 self.device
-                    .device_wait_idle()
+                    .queue_wait_idle(*present_queue)
                     .expect("Failed to wait device idle!")
             };
             let old_surface_resolution = self.get_swapchain().surface_resolution;
@@ -647,9 +647,6 @@ impl RenderContext {
         f: impl FnOnce(&Self, vk::CommandBuffer),
     ) {
         unsafe {
-            self.device
-                .wait_for_fences(&[fence], true, std::u64::MAX)
-                .expect("Wait for fence failed.");
             self.device
                 .reset_fences(&[fence])
                 .expect("Reset fences failed.");
@@ -697,7 +694,9 @@ impl RenderContext {
             self.device
                 .queue_submit(*queue, &[submit_info], fence)
                 .expect("queue submit failed.");
-            self.device.queue_wait_idle(*queue).unwrap();
+            self.device
+                .wait_for_fences(&[fence], true, std::u64::MAX)
+                .unwrap();
         }
     }
 
@@ -721,7 +720,9 @@ impl RenderContext {
             self.device
                 .queue_submit(*queue, &[submit_info], fence)
                 .expect("queue submit failed.");
-            self.device.queue_wait_idle(*queue).unwrap();
+            self.device
+                .wait_for_fences(&[fence], true, std::u64::MAX)
+                .unwrap();
 
             let wait_semaphors = [self.rendering_complete_semaphore];
             let swapchains = [self.get_swapchain().swapchain];
