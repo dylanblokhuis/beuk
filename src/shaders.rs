@@ -245,14 +245,23 @@ impl Shader {
 
                     match binding.ty {
                         rspirv_reflect::DescriptorType::COMBINED_IMAGE_SAMPLER => {
-                            if binding.name.contains("LinearYUV420P") {
+                            if binding.name.contains("Linear2YUV420P") {
                                 bindings.push(
                                     vk::DescriptorSetLayoutBinding::default()
                                         .binding(*binding_index)
                                         .descriptor_count(descriptor_count) // TODO
                                         .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
                                         .stage_flags(stage_flags)
-                                        .immutable_samplers(yuv_samplers),
+                                        .immutable_samplers(std::slice::from_ref(&yuv_samplers[0])),
+                                );
+                            } else if binding.name.contains("Linear3YUV420P") {
+                                bindings.push(
+                                    vk::DescriptorSetLayoutBinding::default()
+                                        .binding(*binding_index)
+                                        .descriptor_count(descriptor_count) // TODO
+                                        .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+                                        .stage_flags(stage_flags)
+                                        .immutable_samplers(std::slice::from_ref(&yuv_samplers[1])),
                                 );
                             } else {
                                 bindings.push(
