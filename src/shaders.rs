@@ -160,60 +160,6 @@ impl Shader {
 
                 let set_layout_create_flags = vk::DescriptorSetLayoutCreateFlags::empty();
 
-                let yuv_2_plane = *samplers.add(
-                    shader_info
-                        .get_yuv_conversion_sampler(
-                            SamplerDesc {
-                                texel_filter: Filter::LINEAR,
-                                mipmap_mode: SamplerMipmapMode::LINEAR,
-                                address_modes: SamplerAddressMode::CLAMP_TO_EDGE,
-                            },
-                            vk::Format::G8_B8R8_2PLANE_420_UNORM,
-                        )
-                        .1,
-                );
-
-                let yuv_3_plane = *samplers.add(
-                    shader_info
-                        .get_yuv_conversion_sampler(
-                            SamplerDesc {
-                                texel_filter: Filter::LINEAR,
-                                mipmap_mode: SamplerMipmapMode::LINEAR,
-                                address_modes: SamplerAddressMode::CLAMP_TO_EDGE,
-                            },
-                            vk::Format::G8_B8_R8_3PLANE_420_UNORM,
-                        )
-                        .1,
-                );
-
-                let yuv_2_plane_hdr = *samplers.add(
-                    shader_info
-                        .get_yuv_conversion_sampler(
-                            SamplerDesc {
-                                texel_filter: Filter::LINEAR,
-                                mipmap_mode: SamplerMipmapMode::LINEAR,
-                                address_modes: SamplerAddressMode::CLAMP_TO_EDGE,
-                            },
-                            vk::Format::G10X6_B10X6R10X6_2PLANE_420_UNORM_3PACK16,
-                        )
-                        .1,
-                );
-
-                let yuv_3_plane_hdr = *samplers.add(
-                    shader_info
-                        .get_yuv_conversion_sampler(
-                            SamplerDesc {
-                                texel_filter: Filter::LINEAR,
-                                mipmap_mode: SamplerMipmapMode::LINEAR,
-                                address_modes: SamplerAddressMode::CLAMP_TO_EDGE,
-                            },
-                            vk::Format::G10X6_B10X6_R10X6_3PLANE_420_UNORM_3PACK16,
-                        )
-                        .1,
-                );
-
-                let yuv_samplers = &[yuv_2_plane, yuv_3_plane, yuv_2_plane_hdr, yuv_3_plane_hdr];
-
                 for (binding_index, binding) in set.iter() {
                     // if binding.name.starts_with("u_") {
                     //     binding_flags[bindings.len()] =
@@ -245,23 +191,39 @@ impl Shader {
 
                     match binding.ty {
                         rspirv_reflect::DescriptorType::COMBINED_IMAGE_SAMPLER => {
-                            if binding.name.contains("LinearYUV420SP") {
+                            if binding.name.contains("LinearYUV") {
                                 bindings.push(
                                     vk::DescriptorSetLayoutBinding::default()
                                         .binding(*binding_index)
                                         .descriptor_count(descriptor_count) // TODO
                                         .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
                                         .stage_flags(stage_flags)
-                                        .immutable_samplers(std::slice::from_ref(&yuv_samplers[0])),
-                                );
-                            } else if binding.name.contains("LinearYUV420P") {
-                                bindings.push(
-                                    vk::DescriptorSetLayoutBinding::default()
-                                        .binding(*binding_index)
-                                        .descriptor_count(descriptor_count) // TODO
-                                        .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-                                        .stage_flags(stage_flags)
-                                        .immutable_samplers(std::slice::from_ref(&yuv_samplers[1])),
+                                        .immutable_samplers(std::slice::from_ref(
+                                            samplers.add(
+                                                shader_info
+                                                    .get_yuv_conversion_sampler(
+                                                        SamplerDesc {
+                                                            texel_filter: Filter::LINEAR,
+                                                            mipmap_mode: SamplerMipmapMode::LINEAR,
+                                                            address_modes:
+                                                                SamplerAddressMode::CLAMP_TO_EDGE,
+                                                        },
+                                                        if binding.name.contains(
+                                                            "LinearYUV420SP"
+                                                        ) {
+                                                            vk::Format::G8_B8R8_2PLANE_420_UNORM
+                                                        } else if binding.name.contains("LinearYUV420SP10") {
+                                                            vk::Format::G10X6_B10X6R10X6_2PLANE_420_UNORM_3PACK16
+                                                        } else if binding.name.contains("LinearYUV420P10") {
+                                                            vk::Format::G10X6_B10X6_R10X6_3PLANE_420_UNORM_3PACK16
+                                                        } else if binding.name.contains("LinearYUV420P") {
+                                                            vk::Format::G8_B8_R8_3PLANE_420_UNORM
+                                                        } else {
+                                                            panic!("Unknown YUV format in shader: {}", binding.name);
+                                                        }).1,
+                                                    )
+                                            ),
+                                        ),
                                 );
                             } else {
                                 bindings.push(
