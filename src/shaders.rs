@@ -245,7 +245,7 @@ impl Shader {
 
                     match binding.ty {
                         rspirv_reflect::DescriptorType::COMBINED_IMAGE_SAMPLER => {
-                            if binding.name.contains("Linear2YUV420P") {
+                            if binding.name.contains("LinearYUV420SP") {
                                 bindings.push(
                                     vk::DescriptorSetLayoutBinding::default()
                                         .binding(*binding_index)
@@ -254,7 +254,7 @@ impl Shader {
                                         .stage_flags(stage_flags)
                                         .immutable_samplers(std::slice::from_ref(&yuv_samplers[0])),
                                 );
-                            } else if binding.name.contains("Linear3YUV420P") {
+                            } else if binding.name.contains("LinearYUV420P") {
                                 bindings.push(
                                     vk::DescriptorSetLayoutBinding::default()
                                         .binding(*binding_index)
