@@ -19,7 +19,7 @@ use ash::{vk, Entry};
 use ash::{Device, Instance};
 use gpu_allocator::vulkan::{Allocator, AllocatorCreateDesc};
 use rayon::ThreadPool;
-use std::{borrow::Cow, collections::HashMap, mem::size_of_val};
+use std::{borrow::Cow, collections::HashMap, mem::size_of_val, sync::{atomic::{AtomicBool, Ordering}, MutexGuard}};
 use std::{cell::RefCell, default::Default};
 use std::{ffi::CStr, sync::Mutex};
 use std::{ops::Drop, sync::RwLock};
@@ -119,7 +119,7 @@ pub struct RenderContext {
     pub yuv_immutable_samplers:
         Arc<HashMap<(vk::Format, SamplerDesc), (vk::SamplerYcbcrConversion, vk::Sampler)>>,
     pub allocator: Arc<Mutex<Allocator>>,
-    pub threaded_command_buffers: Arc<RwLock<HashMap<usize, (CommandBuffer, vk::Fence)>>>,
+    pub threaded_command_buffers: Arc<RwLock<HashMap<usize, Arc<Mutex<(CommandBuffer, vk::Fence)>>>>>,
     pub render_swapchain: Arc<RwLock<RenderSwapchain>>,
     pub thread_id: std::thread::ThreadId,
 
@@ -139,11 +139,11 @@ pub struct RenderContext {
     pub surface: vk::SurfaceKHR,
 
     pub pool: vk::CommandPool,
-    pub main_command_buffer: vk::CommandBuffer,
-    pub main_commands_reuse_fence: vk::Fence,
+    pub main_command_buffer: Arc<Mutex<(vk::CommandBuffer, vk::Fence)>>,
 
     pub present_complete_semaphore: vk::Semaphore,
     pub rendering_complete_semaphore: vk::Semaphore,
+    pub is_resizing: AtomicBool
 }
 
 #[derive(Clone, Copy)]
@@ -423,14 +423,14 @@ impl RenderContext {
                 present_queue,
 
                 pool,
-                main_command_buffer,
+                main_command_buffer: Arc::new(Mutex::new((main_command_buffer, main_commands_reuse_fence))),
 
                 present_complete_semaphore,
                 rendering_complete_semaphore,
-                main_commands_reuse_fence,
                 surface,
                 debug_call_back,
                 debug_utils_loader,
+                is_resizing: AtomicBool::new(false),
             }
         }
     }
@@ -609,6 +609,22 @@ impl RenderContext {
             }
         }
 
+        if self.is_resizing.load(Ordering::Relaxed) {
+            return;
+        }
+
+        self.is_resizing.store(true, Ordering::Relaxed);
+
+        // wait for in flight fences
+        for lock in self.threaded_command_buffers.write().unwrap().iter() {
+            let lock = lock.1.lock().unwrap();
+            unsafe {
+                self.device
+                    .wait_for_fences(&[lock.1], true, u64::MAX)
+                    .expect("Failed to wait for fences!");
+            }
+        }
+
         let (old_surface_resolution, new_surface_resolution) = {
             let present_queue = self.present_queue.lock().unwrap();
             unsafe {
@@ -638,6 +654,8 @@ impl RenderContext {
             .call_swapchain_resize_hooks(old_surface_resolution, new_surface_resolution);
         self.texture_manager
             .call_swapchain_resize_hooks(old_surface_resolution, new_surface_resolution);
+
+        self.is_resizing.store(false, Ordering::Relaxed);
     }
 
     pub fn record(
@@ -672,14 +690,22 @@ impl RenderContext {
     }
 
     /// this can only run on a thread created by the thread pool
-    pub fn get_command_buffer(&self) -> (vk::CommandBuffer, Fence) {
+    pub fn get_command_buffer(&self) -> Arc<Mutex<(vk::CommandBuffer, Fence)>> {
+        while self.is_resizing.load(Ordering::Relaxed) {
+            std::thread::yield_now();
+        }
         if let Some(thread_index) = rayon::current_thread_index() {
             let threaded_command_buffers = self.threaded_command_buffers.read().unwrap();
-            *threaded_command_buffers
+            let lock = threaded_command_buffers
                 .get(&thread_index)
                 .expect("Command buffer not found inside thread pool.")
+                .clone();
+
+            drop(threaded_command_buffers);
+
+        lock
         } else if std::thread::current().id() == self.thread_id {
-            (self.main_command_buffer, self.main_commands_reuse_fence)
+            self.main_command_buffer.clone()
         } else {
             panic!("Command buffer not found inside thread pool.")
         }
@@ -701,27 +727,29 @@ impl RenderContext {
     }
 
     pub fn record_submit(&self, f: impl FnOnce(&Self, vk::CommandBuffer)) {
-        let (command_buffer, fence) = self.get_command_buffer();
-        self.record(command_buffer, fence, f);
-        self.submit(command_buffer, fence);
+        let lock = self.get_command_buffer();
+        let lock = lock.lock().unwrap();
+        self.record(lock.0, lock.1, f);
+        self.submit(lock.0, lock.1);
     }
 
     /// Submits the command buffer to the present queue with corresponding semaphores and waits for it to finish.
     #[tracing::instrument(skip(self))]
     pub fn present_submit(&self, present_index: u32) {
-        let (command_buffer, fence) = self.get_command_buffer();
+        let lock = self.get_command_buffer();
+        let lock = lock.lock().unwrap();
         let submit_info = vk::SubmitInfo::default()
             .wait_semaphores(std::slice::from_ref(&self.present_complete_semaphore))
             .wait_dst_stage_mask(&[vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT])
-            .command_buffers(std::slice::from_ref(&command_buffer))
+            .command_buffers(std::slice::from_ref(&lock.0))
             .signal_semaphores(std::slice::from_ref(&self.rendering_complete_semaphore));
         unsafe {
             let queue = self.present_queue.lock().unwrap();
             self.device
-                .queue_submit(*queue, &[submit_info], fence)
+                .queue_submit(*queue, &[submit_info], lock.1)
                 .expect("queue submit failed.");
             self.device
-                .wait_for_fences(&[fence], true, std::u64::MAX)
+                .wait_for_fences(&[lock.1], true, std::u64::MAX)
                 .unwrap();
 
             let wait_semaphors = [self.rendering_complete_semaphore];
@@ -739,7 +767,7 @@ impl RenderContext {
 
             drop(queue);
 
-            let is_resized = match result {
+            match result {
                 Ok(_) => false,
                 Err(vk_result) => match vk_result {
                     vk::Result::ERROR_OUT_OF_DATE_KHR | vk::Result::SUBOPTIMAL_KHR => true,
@@ -747,14 +775,18 @@ impl RenderContext {
                 },
             };
 
-            if is_resized {
-                self.recreate_swapchain(0, 0);
-            }
+            // if is_resized {
+            //     self.recreate_swapchain(0, 0);
+            // }
         }
     }
 
     pub fn acquire_present_index(&self) -> u32 {
         unsafe {
+            while self.is_resizing.load(Ordering::Relaxed) {
+                std::thread::yield_now();
+            }
+            
             let render_swapchain = self.get_swapchain();
 
             render_swapchain
@@ -779,8 +811,9 @@ impl RenderContext {
         present_index: u32,
         f: F,
     ) {
-        let (command_buffer, fence) = self.get_command_buffer();
-        self.record(command_buffer, fence, |ctx, command_buffer| unsafe {
+        let lock = self.get_command_buffer();
+        let lock = lock.lock().unwrap();
+        self.record(lock.0, lock.1, |ctx, command_buffer| unsafe {
             let render_swapchain = ctx.get_swapchain();
             let layout_transition_barriers = vk::ImageMemoryBarrier::default()
                 .image(render_swapchain.present_images[present_index as usize])
@@ -950,9 +983,9 @@ impl RenderContext {
         queue_family_index: u32,
     ) -> (
         ThreadPool,
-        Arc<RwLock<HashMap<usize, (CommandBuffer, Fence)>>>,
+        Arc<RwLock<HashMap<usize, Arc<Mutex<(CommandBuffer, Fence)>>>>>,
     ) {
-        let m_command_buffers: Arc<RwLock<HashMap<usize, (CommandBuffer, Fence)>>> =
+        let m_command_buffers: Arc<RwLock<HashMap<usize, Arc<Mutex<(CommandBuffer, Fence)>>>>> =
             Arc::new(RwLock::new(HashMap::new()));
         let m_command_buffers_clone = m_command_buffers.clone();
 
@@ -991,7 +1024,7 @@ impl RenderContext {
                     m_command_buffers
                         .write()
                         .unwrap()
-                        .insert(x, (command_buffers[0], fence));
+                        .insert(x, Arc::new(Mutex::new((command_buffers[0], fence))));
                 });
             })
             .build()
@@ -1234,7 +1267,7 @@ impl Drop for RenderContext {
             self.device
                 .destroy_semaphore(self.rendering_complete_semaphore, None);
             self.device
-                .destroy_fence(self.main_commands_reuse_fence, None);
+                .destroy_fence(self.main_command_buffer.lock().unwrap().1, None);
 
             self.cleanup_swapchain();
 
@@ -1243,9 +1276,10 @@ impl Drop for RenderContext {
                     let pool = pool.take();
                     let mut command_buffer_g = self.threaded_command_buffers.write().unwrap();
                     let command_buffer = command_buffer_g.get(&ctx.index());
-                    if let Some((command_buffer, fence)) = command_buffer {
-                        self.device.free_command_buffers(pool, &[*command_buffer]);
-                        self.device.destroy_fence(*fence, None);
+                    if let Some(lock) = command_buffer {
+                        let lock = lock.lock().unwrap();
+                        self.device.free_command_buffers(pool, &[lock.0]);
+                        self.device.destroy_fence(lock.1, None);
                     }
                     self.device.destroy_command_pool(pool, None);
                     command_buffer_g.remove(&ctx.index());

@@ -12,6 +12,7 @@ use beuk::{
 };
 use raw_window_handle::{HasRawDisplayHandle, HasRawWindowHandle};
 use std::sync::Arc;
+use std::time::{Instant, Duration};
 use winit::{
     event::{Event, WindowEvent},
     event_loop::EventLoop,
@@ -62,32 +63,39 @@ fn main() {
         }
     });
 
-    event_loop.run(move |event, _, control_flow| match event {
-        Event::WindowEvent {
-            event: WindowEvent::CloseRequested,
-            window_id,
-        } if window_id == window.id() => control_flow.set_exit(),
+   
+let mut last_resize_time = Instant::now();
+let mut pending_resize: Option<(u32, u32)> = None;
+const RESIZE_THROTTLE_DURATION: Duration = Duration::from_millis(100);  // Throttle to 100ms
 
-        Event::WindowEvent { event, .. } => match event {
-            WindowEvent::ScaleFactorChanged { new_inner_size, .. } => {
-                ctx.recreate_swapchain(new_inner_size.width, new_inner_size.height);
-                window.request_redraw();
-            }
-            WindowEvent::Resized(size) => {
-                ctx.recreate_swapchain(size.width, size.height);
-                window.request_redraw();
-            }
-            _ => (),
-        },
+event_loop.run(move |event, _, control_flow| match event {
+    Event::WindowEvent {
+        event: WindowEvent::CloseRequested,
+        window_id,
+    } if window_id == window.id() => control_flow.set_exit(),
 
-        Event::MainEventsCleared => {
-            window.request_redraw();
-        }
-        Event::RedrawRequested(_) => {
-            present_pass.combine_and_draw(&ctx, &pass_one_attachment, &pass_two_attachment)
+    Event::WindowEvent { event, .. } => match event {
+        WindowEvent::ScaleFactorChanged { new_inner_size, .. } | WindowEvent::Resized(new_inner_size) => {
+            pending_resize = Some((new_inner_size.width, new_inner_size.height));
         }
         _ => (),
-    });
+    },
+
+    Event::MainEventsCleared => {
+        if let Some((width, height)) = pending_resize {
+            if last_resize_time.elapsed() > RESIZE_THROTTLE_DURATION {
+                ctx.recreate_swapchain(width, height);
+                last_resize_time = Instant::now();
+                pending_resize = None;
+            }
+        }
+        window.request_redraw();
+    }
+    Event::RedrawRequested(_) => {
+        present_pass.combine_and_draw(&ctx, &pass_one_attachment, &pass_two_attachment)
+    }
+    _ => (),
+});
 }
 
 #[repr(C, align(16))]
@@ -444,6 +452,7 @@ impl PresentRenderPass {
         pass_one: &ResourceHandle<Texture>,
         pass_two: &ResourceHandle<Texture>,
     ) {
+        let present_index = ctx.acquire_present_index();
         let pipeline = ctx.graphics_pipelines.get(&self.pipeline_handle).unwrap();
         unsafe {
             ctx.device.update_descriptor_sets(
@@ -488,7 +497,6 @@ impl PresentRenderPass {
                 &[],
             );
         };
-        let present_index = ctx.acquire_present_index();
         ctx.present_record(
             present_index,
             |ctx, command_buffer, color_view, _depth_view| unsafe {
