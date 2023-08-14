@@ -55,7 +55,6 @@ impl Buffer {
         usage: vk::BufferUsageFlags,
         location: MemoryLocation,
     ) -> Buffer {
-        let size = size;
         let mut usage = usage;
         if !usage.contains(vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS) {
             usage |= vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS;

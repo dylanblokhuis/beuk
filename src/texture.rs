@@ -5,7 +5,7 @@ use gpu_allocator::{
 };
 use std::sync::Arc;
 
-use crate::memory::ResourceHooks;
+use crate::{ctx::RenderContext, memory::ResourceHooks};
 
 #[derive(Debug, Default)]
 pub struct Texture {
@@ -37,8 +37,7 @@ impl ResourceHooks for Texture {
     // Some resources, like color attachments that use the swapchain size need to be recreated when the swapchain is resized
     fn on_swapchain_resize(
         &mut self,
-        device: Arc<ash::Device>,
-        allocator: Arc<std::sync::Mutex<Allocator>>,
+        ctx: &RenderContext,
         _old_surface_resolution: vk::Extent2D,
         new_surface_resolution: vk::Extent2D,
     ) {
@@ -55,8 +54,7 @@ impl ResourceHooks for Texture {
             return;
         }
 
-        // Clean up the old resources
-        self.destroy(&device, &mut allocator.lock().unwrap());
+        let mut allocator = ctx.allocator.lock().unwrap();
 
         // Create new image with updated extent
         let image_info = vk::ImageCreateInfo {
@@ -78,9 +76,20 @@ impl ResourceHooks for Texture {
         };
 
         let name = self.name.clone();
+        let was_dedicated = self.allocation.as_ref().unwrap().is_dedicated();
+
+        // Clean up the old resources
+        self.destroy(&ctx.device, &mut allocator);
+
         // Reconstruct the texture with the new size
-        *self = Texture::new(&device, &mut allocator.lock().unwrap(), &name, &image_info);
-        self.create_view(&device);
+        *self = Texture::new(
+            &ctx.device,
+            &mut allocator,
+            &name,
+            &image_info,
+            was_dedicated,
+        );
+        self.create_view(&ctx.device);
     }
 }
 
@@ -90,6 +99,7 @@ impl Texture {
         allocator: &mut Allocator,
         debug_name: &str,
         image_info: &vk::ImageCreateInfo,
+        dedicated: bool,
     ) -> Texture {
         let image = unsafe { device.create_image(image_info, None) }.unwrap();
         let requirements = unsafe { device.get_image_memory_requirements(image) };
@@ -100,7 +110,11 @@ impl Texture {
                 requirements,
                 location: MemoryLocation::GpuOnly,
                 linear: false,
-                allocation_scheme: gpu_allocator::vulkan::AllocationScheme::GpuAllocatorManaged,
+                allocation_scheme: if dedicated {
+                    gpu_allocator::vulkan::AllocationScheme::DedicatedImage(image)
+                } else {
+                    gpu_allocator::vulkan::AllocationScheme::GpuAllocatorManaged
+                },
             })
             .unwrap();
         let offset = allocation.offset();
@@ -274,7 +288,10 @@ impl Texture {
             vk::Format::R16G16B16A16_SFLOAT => 8,
             vk::Format::R32G32B32A32_SFLOAT => 16,
             vk::Format::B8G8R8A8_UNORM => 4,
-            format => panic!("{:?} format hasn't been supplied yet, please add it", format),
+            format => panic!(
+                "{:?} format hasn't been supplied yet, please add it",
+                format
+            ),
             // vk::Format::R32_SFLOAT => uncompressed(4),
             // vk::Format::R16G16_SFLOAT => uncompressed(8),
             // vk::Format::Rgba32Float => uncompressed(16),

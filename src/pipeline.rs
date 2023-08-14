@@ -9,7 +9,7 @@ use ash::{
 };
 use serde::ser::SerializeStruct;
 
-use crate::{memory::ResourceHooks, shaders::ImmutableShaderInfo};
+use crate::{ctx::RenderContext, memory::ResourceHooks, shaders::ImmutableShaderInfo};
 
 use super::shaders::Shader;
 
@@ -548,8 +548,7 @@ impl ResourceHooks for GraphicsPipeline {
 
     fn on_swapchain_resize(
         &mut self,
-        _device: std::sync::Arc<ash::Device>,
-        _allocator: std::sync::Arc<std::sync::Mutex<gpu_allocator::vulkan::Allocator>>,
+        _ctx: &RenderContext,
         old_surface_resolution: vk::Extent2D,
         new_surface_resolution: vk::Extent2D,
     ) {

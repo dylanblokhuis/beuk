@@ -19,7 +19,12 @@ use ash::{vk, Entry};
 use ash::{Device, Instance};
 use gpu_allocator::vulkan::{Allocator, AllocatorCreateDesc};
 use rayon::ThreadPool;
-use std::{borrow::Cow, collections::HashMap, mem::size_of_val, sync::{atomic::{AtomicBool, Ordering}, MutexGuard}};
+use std::{
+    borrow::Cow,
+    collections::HashMap,
+    mem::size_of_val,
+    sync::atomic::{AtomicBool, Ordering},
+};
 use std::{cell::RefCell, default::Default};
 use std::{ffi::CStr, sync::Mutex};
 use std::{ops::Drop, sync::RwLock};
@@ -119,7 +124,8 @@ pub struct RenderContext {
     pub yuv_immutable_samplers:
         Arc<HashMap<(vk::Format, SamplerDesc), (vk::SamplerYcbcrConversion, vk::Sampler)>>,
     pub allocator: Arc<Mutex<Allocator>>,
-    pub threaded_command_buffers: Arc<RwLock<HashMap<usize, Arc<Mutex<(CommandBuffer, vk::Fence)>>>>>,
+    pub threaded_command_buffers:
+        Arc<RwLock<HashMap<usize, Arc<Mutex<(CommandBuffer, vk::Fence)>>>>>,
     pub render_swapchain: Arc<RwLock<RenderSwapchain>>,
     pub thread_id: std::thread::ThreadId,
 
@@ -143,7 +149,7 @@ pub struct RenderContext {
 
     pub present_complete_semaphore: vk::Semaphore,
     pub rendering_complete_semaphore: vk::Semaphore,
-    pub is_resizing: AtomicBool
+    pub is_resizing: AtomicBool,
 }
 
 #[derive(Clone, Copy)]
@@ -423,7 +429,10 @@ impl RenderContext {
                 present_queue,
 
                 pool,
-                main_command_buffer: Arc::new(Mutex::new((main_command_buffer, main_commands_reuse_fence))),
+                main_command_buffer: Arc::new(Mutex::new((
+                    main_command_buffer,
+                    main_commands_reuse_fence,
+                ))),
 
                 present_complete_semaphore,
                 rendering_complete_semaphore,
@@ -616,7 +625,7 @@ impl RenderContext {
         self.is_resizing.store(true, Ordering::Relaxed);
 
         // wait for in flight fences
-        for lock in self.threaded_command_buffers.write().unwrap().iter() {
+        for lock in self.threaded_command_buffers.read().unwrap().iter() {
             let lock = lock.1.lock().unwrap();
             unsafe {
                 self.device
@@ -625,8 +634,8 @@ impl RenderContext {
             }
         }
 
+        let present_queue = self.present_queue.lock().unwrap();
         let (old_surface_resolution, new_surface_resolution) = {
-            let present_queue = self.present_queue.lock().unwrap();
             unsafe {
                 self.device
                     .queue_wait_idle(*present_queue)
@@ -650,10 +659,16 @@ impl RenderContext {
             (old_surface_resolution, new_surface_resolution)
         };
 
-        self.graphics_pipelines
-            .call_swapchain_resize_hooks(old_surface_resolution, new_surface_resolution);
-        self.texture_manager
-            .call_swapchain_resize_hooks(old_surface_resolution, new_surface_resolution);
+        self.graphics_pipelines.call_swapchain_resize_hooks(
+            self,
+            old_surface_resolution,
+            new_surface_resolution,
+        );
+        self.texture_manager.call_swapchain_resize_hooks(
+            self,
+            old_surface_resolution,
+            new_surface_resolution,
+        );
 
         self.is_resizing.store(false, Ordering::Relaxed);
     }
@@ -703,7 +718,7 @@ impl RenderContext {
 
             drop(threaded_command_buffers);
 
-        lock
+            lock
         } else if std::thread::current().id() == self.thread_id {
             self.main_command_buffer.clone()
         } else {
@@ -786,7 +801,7 @@ impl RenderContext {
             while self.is_resizing.load(Ordering::Relaxed) {
                 std::thread::yield_now();
             }
-            
+
             let render_swapchain = self.get_swapchain();
 
             render_swapchain
@@ -1213,12 +1228,15 @@ impl RenderContext {
         &self,
         debug_name: &str,
         create_info: &vk::ImageCreateInfo,
+        // If true, the texture will be allocated in dedicated memory.
+        is_dedicated: bool,
     ) -> ResourceHandle<Texture> {
         let texture = Texture::new(
             &self.device,
             &mut self.allocator.lock().unwrap(),
             debug_name,
             create_info,
+            is_dedicated,
         );
         let id = self.texture_manager.create(texture);
         ResourceHandle::new(id, self.texture_manager.clone())

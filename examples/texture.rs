@@ -47,6 +47,16 @@ fn main() {
             window_id,
         } if window_id == window.id() => control_flow.set_exit(),
 
+        Event::WindowEvent { event, .. } => match event {
+            WindowEvent::ScaleFactorChanged { new_inner_size, .. } => {
+                ctx.recreate_swapchain(new_inner_size.width, new_inner_size.height);
+            }
+            WindowEvent::Resized(size) => {
+                ctx.recreate_swapchain(size.width, size.height);
+            }
+            _ => (),
+        },
+
         Event::MainEventsCleared => {
             window.request_redraw();
         }
@@ -185,6 +195,7 @@ impl Canvas {
                 sharing_mode: vk::SharingMode::EXCLUSIVE,
                 ..Default::default()
             },
+            false,
         );
 
         let buffer_handle = ctx.create_buffer_with_data(

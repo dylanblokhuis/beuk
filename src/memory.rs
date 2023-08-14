@@ -9,6 +9,8 @@ use ash::vk::Extent2D;
 use crossbeam_queue::ArrayQueue;
 use gpu_allocator::vulkan::Allocator;
 
+use crate::ctx::RenderContext;
+
 pub type Generation = usize;
 pub type Index = usize;
 
@@ -28,8 +30,7 @@ pub trait ResourceHooks {
     fn cleanup(&mut self, device: Arc<ash::Device>, allocator: Arc<Mutex<Allocator>>);
     fn on_swapchain_resize(
         &mut self,
-        _device: Arc<ash::Device>,
-        _allocator: Arc<Mutex<Allocator>>,
+        _ctx: &RenderContext,
         _old_surface_resolution: Extent2D,
         _new_surface_resolution: Extent2D,
     ) {
@@ -210,20 +211,17 @@ impl<T: Default + Debug + ResourceHooks> ResourceManager<T> {
     }
 
     /// Call the swapchain resize hooks for all resources.
-    #[tracing::instrument(skip(self))]
+    #[tracing::instrument(skip(self, ctx))]
     pub fn call_swapchain_resize_hooks(
         &self,
+        ctx: &RenderContext,
         old_surface_resolution: Extent2D,
         new_surface_resolution: Extent2D,
     ) {
         for (_, resource) in self.resources.iter() {
             let data = unsafe { &mut *resource.0.get() };
-            data.inner.on_swapchain_resize(
-                self.device.clone(),
-                self.allocator.clone(),
-                old_surface_resolution,
-                new_surface_resolution,
-            );
+            data.inner
+                .on_swapchain_resize(ctx, old_surface_resolution, new_surface_resolution);
         }
     }
 }
