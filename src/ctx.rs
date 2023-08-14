@@ -19,7 +19,12 @@ use ash::{vk, Entry};
 use ash::{Device, Instance};
 use gpu_allocator::vulkan::{Allocator, AllocatorCreateDesc};
 use rayon::ThreadPool;
-use std::{borrow::Cow, collections::HashMap, mem::size_of_val};
+use std::{
+    borrow::Cow,
+    collections::HashMap,
+    mem::size_of_val,
+    sync::atomic::{AtomicBool, Ordering},
+};
 use std::{cell::RefCell, default::Default};
 use std::{ffi::CStr, sync::Mutex};
 use std::{ops::Drop, sync::RwLock};
@@ -144,6 +149,7 @@ pub struct RenderContext {
 
     pub present_complete_semaphore: vk::Semaphore,
     pub rendering_complete_semaphore: vk::Semaphore,
+    pub is_resizing: AtomicBool,
 }
 
 #[derive(Clone, Copy)]
@@ -431,6 +437,7 @@ impl RenderContext {
                 surface,
                 debug_call_back,
                 debug_utils_loader,
+                is_resizing: AtomicBool::new(false),
             }
         }
     }
@@ -608,14 +615,31 @@ impl RenderContext {
                 return;
             }
         }
+        // if self.is_resizing.load(Ordering::Relaxed) {
+        //     return;
+        // }
+        // self.is_resizing.store(true, Ordering::Relaxed);
+
+        unsafe {
+            let bufs = self.threaded_command_buffers.write().unwrap();
+            let mut fences = vec![];
+            for (_, (_, fence)) in bufs.iter() {
+                fences.push(*fence);
+            }
+            self.device
+                .wait_for_fences(&fences, true, std::u64::MAX)
+                .expect("Failed to wait for fences!");
+            let present_queue = self.present_queue.lock().unwrap();
+
+            self.device
+                .queue_wait_idle(*present_queue)
+                .expect("Failed to wait device idle!");
+            self.device
+                .device_wait_idle()
+                .expect("Failed to wait device idle!");
+        };
 
         let (old_surface_resolution, new_surface_resolution) = {
-            let present_queue = self.present_queue.lock().unwrap();
-            unsafe {
-                self.device
-                    .queue_wait_idle(*present_queue)
-                    .expect("Failed to wait device idle!")
-            };
             let old_surface_resolution = self.get_swapchain().surface_resolution;
             self.cleanup_swapchain();
             let render_swapchain = {
@@ -638,6 +662,7 @@ impl RenderContext {
             .call_swapchain_resize_hooks(old_surface_resolution, new_surface_resolution);
         self.texture_manager
             .call_swapchain_resize_hooks(old_surface_resolution, new_surface_resolution);
+        // self.is_resizing.store(false, Ordering::Relaxed);
     }
 
     pub fn record(
@@ -647,6 +672,9 @@ impl RenderContext {
         f: impl FnOnce(&Self, vk::CommandBuffer),
     ) {
         unsafe {
+            self.device
+                .wait_for_fences(&[fence], true, std::u64::MAX)
+                .expect("Wait for fences failed.");
             self.device
                 .reset_fences(&[fence])
                 .expect("Reset fences failed.");
@@ -698,6 +726,10 @@ impl RenderContext {
                 .wait_for_fences(&[fence], true, std::u64::MAX)
                 .unwrap();
         }
+
+        // while self.is_resizing.load(Ordering::Relaxed) {
+        //     std::thread::yield_now();
+        // }
     }
 
     pub fn record_submit(&self, f: impl FnOnce(&Self, vk::CommandBuffer)) {
@@ -709,6 +741,7 @@ impl RenderContext {
     /// Submits the command buffer to the present queue with corresponding semaphores and waits for it to finish.
     #[tracing::instrument(skip(self))]
     pub fn present_submit(&self, present_index: u32) {
+        let queue = self.present_queue.lock().unwrap();
         let (command_buffer, fence) = self.get_command_buffer();
         let submit_info = vk::SubmitInfo::default()
             .wait_semaphores(std::slice::from_ref(&self.present_complete_semaphore))
@@ -716,7 +749,6 @@ impl RenderContext {
             .command_buffers(std::slice::from_ref(&command_buffer))
             .signal_semaphores(std::slice::from_ref(&self.rendering_complete_semaphore));
         unsafe {
-            let queue = self.present_queue.lock().unwrap();
             self.device
                 .queue_submit(*queue, &[submit_info], fence)
                 .expect("queue submit failed.");
@@ -739,7 +771,7 @@ impl RenderContext {
 
             drop(queue);
 
-            let is_resized = match result {
+            match result {
                 Ok(_) => false,
                 Err(vk_result) => match vk_result {
                     vk::Result::ERROR_OUT_OF_DATE_KHR | vk::Result::SUBOPTIMAL_KHR => true,
@@ -747,9 +779,13 @@ impl RenderContext {
                 },
             };
 
-            if is_resized {
-                self.recreate_swapchain(0, 0);
-            }
+            // while self.is_resizing.load(Ordering::Relaxed) {
+            //     std::thread::yield_now();
+            // }
+
+            // if is_resized {
+            //     self.recreate_swapchain(0, 0);
+            // }
         }
     }
 
@@ -1007,7 +1043,8 @@ impl RenderContext {
         texture: &ResourceHandle<Texture>,
     ) {
         self.record_submit(|ctx, command_buffer| unsafe {
-            let texture = ctx.texture_manager.get_mut(texture).unwrap();
+            let mut texture = ctx.texture_manager.get_mut(texture).unwrap();
+            let texture = texture.data();
             texture.transition(
                 &ctx.device,
                 command_buffer,
@@ -1020,7 +1057,7 @@ impl RenderContext {
 
             ctx.device.cmd_copy_buffer_to_image(
                 command_buffer,
-                ctx.buffer_manager.get(buffer).unwrap().buffer(),
+                ctx.buffer_manager.get(buffer).unwrap().data().buffer(),
                 texture.image,
                 texture.layout,
                 &[vk::BufferImageCopy::default()
@@ -1150,15 +1187,15 @@ impl RenderContext {
                 location: MemoryLocation::CpuToGpu,
                 debug_name: "Staging buffer",
             });
-            let staging_buffer = self.buffer_manager.get_mut(&staging_handle).unwrap();
-            staging_buffer.copy_from_slice(data, offset);
+            let mut staging_buffer = self.buffer_manager.get_mut(&staging_handle).unwrap();
+            staging_buffer.data().copy_from_slice(data, offset);
 
             self.record_submit(|ctx: &RenderContext, command_buffer| unsafe {
-                let buffer = self.buffer_manager.get(&handle).unwrap();
+                let mut buffer = self.buffer_manager.get(&handle).unwrap();
                 ctx.device.cmd_copy_buffer(
                     command_buffer,
-                    staging_buffer.buffer(),
-                    buffer.buffer(),
+                    staging_buffer.data().buffer(),
+                    buffer.data().buffer(),
                     &[vk::BufferCopy {
                         size: desc.size,
                         src_offset: 0,
@@ -1170,6 +1207,7 @@ impl RenderContext {
             self.buffer_manager
                 .get_mut(&handle)
                 .unwrap()
+                .data()
                 .copy_from_slice(data, offset);
         }
 
@@ -1196,8 +1234,8 @@ impl RenderContext {
         &self,
         texture: &ResourceHandle<Texture>,
     ) -> Option<Arc<vk::ImageView>> {
-        let texture = self.texture_manager.get_mut(texture)?;
-        Some(texture.create_view(&self.device))
+        let mut texture = self.texture_manager.get_mut(texture)?;
+        Some(texture.data().create_view(&self.device))
     }
 
     pub fn create_graphics_pipeline(

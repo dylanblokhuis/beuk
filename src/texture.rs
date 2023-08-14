@@ -56,7 +56,7 @@ impl ResourceHooks for Texture {
         }
 
         // Clean up the old resources
-        self.destroy(&device, &mut allocator.lock().unwrap());
+        // self.destroy(&device, &mut allocator.lock().unwrap());
 
         // Create new image with updated extent
         let image_info = vk::ImageCreateInfo {
@@ -79,8 +79,12 @@ impl ResourceHooks for Texture {
 
         let name = self.name.clone();
         // Reconstruct the texture with the new size
-        *self = Texture::new(&device, &mut allocator.lock().unwrap(), &name, &image_info);
-        self.create_view(&device);
+        let mut new_texture =
+            Texture::new(&device, &mut allocator.lock().unwrap(), &name, &image_info);
+        self.view = None;
+        new_texture.create_view(&device);
+
+        std::mem::replace(self, new_texture).destroy(&device, &mut allocator.lock().unwrap());
     }
 }
 
@@ -274,7 +278,10 @@ impl Texture {
             vk::Format::R16G16B16A16_SFLOAT => 8,
             vk::Format::R32G32B32A32_SFLOAT => 16,
             vk::Format::B8G8R8A8_UNORM => 4,
-            format => panic!("{:?} format hasn't been supplied yet, please add it", format),
+            format => panic!(
+                "{:?} format hasn't been supplied yet, please add it",
+                format
+            ),
             // vk::Format::R32_SFLOAT => uncompressed(4),
             // vk::Format::R16G16_SFLOAT => uncompressed(8),
             // vk::Format::Rgba32Float => uncompressed(16),

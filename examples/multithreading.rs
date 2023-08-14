@@ -51,6 +51,7 @@ fn main() {
         let ctx = ctx.clone();
         move || loop {
             pass_one.draw(&ctx);
+            std::thread::sleep(std::time::Duration::from_millis(10));
         }
     });
 
@@ -59,6 +60,7 @@ fn main() {
 
         move || loop {
             pass_two.draw(&ctx);
+            std::thread::sleep(std::time::Duration::from_millis(10));
         }
     });
 
@@ -247,9 +249,11 @@ impl Pass {
     }
 
     pub fn draw(&self, ctx: &RenderContext) {
+        let mut texture = ctx.texture_manager.get(&self.attachment).unwrap();
         ctx.record_submit(|ctx, command_buffer| unsafe {
+            let texture = texture.data();
             let color_attachments = &[vk::RenderingAttachmentInfo::default()
-                .image_view(*ctx.get_texture_view(&self.attachment).unwrap())
+                .image_view(*texture.create_view(&ctx.device).as_ref())
                 .image_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
                 .load_op(vk::AttachmentLoadOp::CLEAR)
                 .store_op(vk::AttachmentStoreOp::STORE)
@@ -264,16 +268,27 @@ impl Pass {
             ctx.graphics_pipelines
                 .get(&self.pipeline_handle)
                 .unwrap()
+                .data()
                 .bind(&ctx.device, command_buffer);
             ctx.device.cmd_bind_vertex_buffers(
                 command_buffer,
                 0,
-                std::slice::from_ref(&ctx.buffer_manager.get(&self.vertex_buffer).unwrap().buffer),
+                std::slice::from_ref(
+                    &ctx.buffer_manager
+                        .get(&self.vertex_buffer)
+                        .unwrap()
+                        .data()
+                        .buffer,
+                ),
                 &[0],
             );
             ctx.device.cmd_bind_index_buffer(
                 command_buffer,
-                ctx.buffer_manager.get(&self.index_buffer).unwrap().buffer,
+                ctx.buffer_manager
+                    .get(&self.index_buffer)
+                    .unwrap()
+                    .data()
+                    .buffer,
                 0,
                 vk::IndexType::UINT32,
             );
@@ -327,19 +342,17 @@ impl PresentRenderPass {
             #extension GL_ARB_separate_shader_objects : enable
             #extension GL_ARB_shading_language_420pack : enable
 
-            layout (set = 0, binding = 0) uniform sampler2D ui_texture;
-            layout (set = 0, binding = 1) uniform sampler2D media_texture;
+            layout (set = 0, binding = 0) uniform sampler2D pass_one_texture;
+            layout (set = 0, binding = 1) uniform sampler2D pass_two_texture;
 
             layout (location = 0) in vec2 o_uv;
             layout (location = 0) out vec4 a_frag_color;
 
             void main() {
-                vec4 ui_data = texture(ui_texture, o_uv);
-                if (ui_data.a == 0.0) {
-                    a_frag_color = texture(media_texture, o_uv);
-                } else {
-                    a_frag_color = ui_data;
-                }
+                vec4 pass_one_data = texture(pass_one_texture, o_uv);
+                vec4 pass_two_data = texture(pass_two_texture, o_uv);
+
+                a_frag_color = mix(pass_one_data, pass_two_data, 1.0);
             }
             "#,
             "shader.frag",
@@ -380,7 +393,7 @@ impl PresentRenderPass {
             },
             depth_stencil: Default::default(),
             push_constant_range: None,
-            blend: Default::default(),
+            blend: vec![BlendState::ALPHA_BLENDING],
             multisample: Default::default(),
         });
 
@@ -444,8 +457,11 @@ impl PresentRenderPass {
         pass_one: &ResourceHandle<Texture>,
         pass_two: &ResourceHandle<Texture>,
     ) {
-        let pipeline = ctx.graphics_pipelines.get(&self.pipeline_handle).unwrap();
         unsafe {
+            let mut pipeline = ctx.graphics_pipelines.get(&self.pipeline_handle).unwrap();
+            let pipeline = pipeline.data();
+            let mut pass_one_tex = ctx.texture_manager.get(pass_one).unwrap();
+            let mut pass_two_tex = ctx.texture_manager.get(pass_two).unwrap();
             ctx.device.update_descriptor_sets(
                 &[
                     vk::WriteDescriptorSet::default()
@@ -455,7 +471,7 @@ impl PresentRenderPass {
                         .image_info(std::slice::from_ref(
                             &vk::DescriptorImageInfo::default()
                                 .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
-                                .image_view(*ctx.get_texture_view(pass_one).unwrap())
+                                .image_view(*pass_one_tex.data().create_view(&ctx.device))
                                 .sampler(
                                     *ctx.immutable_samplers
                                         .get(&SamplerDesc {
@@ -473,7 +489,7 @@ impl PresentRenderPass {
                         .image_info(std::slice::from_ref(
                             &vk::DescriptorImageInfo::default()
                                 .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
-                                .image_view(*ctx.get_texture_view(pass_two).unwrap())
+                                .image_view(*pass_two_tex.data().create_view(&ctx.device))
                                 .sampler(
                                     *ctx.immutable_samplers
                                         .get(&SamplerDesc {
@@ -499,24 +515,33 @@ impl PresentRenderPass {
                     .store_op(vk::AttachmentStoreOp::STORE)
                     .clear_value(vk::ClearValue {
                         color: vk::ClearColorValue {
-                            float32: [0.0, 0.0, 0.0, 1.0],
+                            float32: [0.0, 0.0, 0.0, 0.5],
                         },
                     })];
 
                 ctx.begin_rendering(command_buffer, color_attachments, None);
-
+                let mut pipeline = ctx.graphics_pipelines.get(&self.pipeline_handle).unwrap();
+                let pipeline = pipeline.data();
                 pipeline.bind(&ctx.device, command_buffer);
                 ctx.device.cmd_bind_vertex_buffers(
                     command_buffer,
                     0,
                     std::slice::from_ref(
-                        &ctx.buffer_manager.get(&self.vertex_buffer).unwrap().buffer,
+                        &ctx.buffer_manager
+                            .get(&self.vertex_buffer)
+                            .unwrap()
+                            .data()
+                            .buffer,
                     ),
                     &[0],
                 );
                 ctx.device.cmd_bind_index_buffer(
                     command_buffer,
-                    ctx.buffer_manager.get(&self.index_buffer).unwrap().buffer,
+                    ctx.buffer_manager
+                        .get(&self.index_buffer)
+                        .unwrap()
+                        .data()
+                        .buffer,
                     0,
                     vk::IndexType::UINT32,
                 );

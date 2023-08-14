@@ -208,6 +208,7 @@ impl Canvas {
                 ctx.graphics_pipelines
                     .get(&self.pipeline_handle)
                     .unwrap()
+                    .data()
                     .bind(&ctx.device, command_buffer);
 
                 ctx.device.cmd_bind_vertex_buffers(
@@ -217,13 +218,18 @@ impl Canvas {
                         &ctx.buffer_manager
                             .get(&self.vertex_buffer)
                             .unwrap()
+                            .data()
                             .buffer(),
                     ),
                     &[0],
                 );
                 ctx.device.cmd_bind_index_buffer(
                     command_buffer,
-                    ctx.buffer_manager.get(&self.index_buffer).unwrap().buffer(),
+                    ctx.buffer_manager
+                        .get(&self.index_buffer)
+                        .unwrap()
+                        .data()
+                        .buffer(),
                     0,
                     vk::IndexType::UINT16,
                 );
