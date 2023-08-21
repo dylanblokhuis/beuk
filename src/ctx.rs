@@ -945,54 +945,6 @@ impl RenderContext {
         }
     }
 
-    fn create_samplers(device: &ash::Device) -> HashMap<SamplerDesc, vk::Sampler> {
-        let texel_filters = [vk::Filter::NEAREST, vk::Filter::LINEAR];
-        let mipmap_modes = [
-            vk::SamplerMipmapMode::NEAREST,
-            vk::SamplerMipmapMode::LINEAR,
-        ];
-        let address_modes = [
-            vk::SamplerAddressMode::REPEAT,
-            vk::SamplerAddressMode::CLAMP_TO_EDGE,
-        ];
-
-        let mut result = HashMap::new();
-
-        for &texel_filter in &texel_filters {
-            for &mipmap_mode in &mipmap_modes {
-                for &address_modes in &address_modes {
-                    let anisotropy_enable = texel_filter == vk::Filter::LINEAR;
-
-                    result.insert(
-                        SamplerDesc {
-                            texel_filter,
-                            mipmap_mode,
-                            address_modes,
-                        },
-                        unsafe {
-                            device.create_sampler(
-                                &vk::SamplerCreateInfo::default()
-                                    .mag_filter(texel_filter)
-                                    .min_filter(texel_filter)
-                                    .mipmap_mode(mipmap_mode)
-                                    .address_mode_u(address_modes)
-                                    .address_mode_v(address_modes)
-                                    .address_mode_w(address_modes)
-                                    .max_lod(vk::LOD_CLAMP_NONE)
-                                    .max_anisotropy(16.0)
-                                    .anisotropy_enable(anisotropy_enable),
-                                None,
-                            )
-                        }
-                        .expect("create_sampler"),
-                    );
-                }
-            }
-        }
-
-        result
-    }
-
     pub fn create_command_thread_pool(
         device: Device,
         queue_family_index: u32,
@@ -1347,7 +1299,7 @@ fn create_immutable_samplers(device: &ash::Device) -> HashMap<SamplerDesc, vk::S
     for &texel_filter in &texel_filters {
         for &mipmap_mode in &mipmap_modes {
             for &address_modes in &address_modes {
-                let anisotropy_enable = texel_filter == vk::Filter::LINEAR;
+                // let anisotropy_enable = texel_filter == vk::Filter::LINEAR;
 
                 result.insert(
                     SamplerDesc {
@@ -1363,10 +1315,7 @@ fn create_immutable_samplers(device: &ash::Device) -> HashMap<SamplerDesc, vk::S
                                 .mipmap_mode(mipmap_mode)
                                 .address_mode_u(address_modes)
                                 .address_mode_v(address_modes)
-                                .address_mode_w(address_modes)
-                                .max_lod(vk::LOD_CLAMP_NONE)
-                                .max_anisotropy(16.0)
-                                .anisotropy_enable(anisotropy_enable),
+                                .address_mode_w(address_modes),
                             None,
                         )
                     }
@@ -1433,10 +1382,6 @@ fn create_immutable_yuv_samplers(
                         .address_mode_u(desc.address_modes)
                         .address_mode_v(desc.address_modes)
                         .address_mode_w(desc.address_modes)
-                        .max_lod(vk::LOD_CLAMP_NONE)
-                        .max_anisotropy(16.0)
-                        .anisotropy_enable(false)
-                        .unnormalized_coordinates(false)
                         .push_next(&mut conversion_info),
                     None,
                 )
