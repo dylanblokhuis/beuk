@@ -1005,6 +1005,7 @@ impl RenderContext {
         &self,
         buffer: &ResourceHandle<Buffer>,
         texture: &ResourceHandle<Texture>,
+        offset: u64,
     ) {
         self.record_submit(|ctx, command_buffer| unsafe {
             let texture = ctx.texture_manager.get_mut(texture).unwrap();
@@ -1024,7 +1025,7 @@ impl RenderContext {
                 texture.image,
                 texture.layout,
                 &[vk::BufferImageCopy::default()
-                    .buffer_offset(0)
+                    .buffer_offset(offset)
                     .buffer_row_length(texture.extent.width)
                     .buffer_image_height(0)
                     .image_subresource(vk::ImageSubresourceLayers {
@@ -1192,6 +1193,40 @@ impl RenderContext {
         );
         let id = self.texture_manager.create(texture);
         ResourceHandle::new(id, self.texture_manager.clone())
+    }
+
+    pub fn create_texture_with_data(
+        &self,
+        debug_name: &str,
+        create_info: &vk::ImageCreateInfo,
+        data: &[u8],
+        offset: u64,
+        // If true, the texture will be allocated in dedicated memory.
+        is_dedicated: bool,
+    ) -> ResourceHandle<Texture> {
+        let texture = Texture::new(
+            &self.device,
+            &mut self.allocator.lock().unwrap(),
+            debug_name,
+            create_info,
+            is_dedicated,
+        );
+        let id = self.texture_manager.create(texture);
+        let texture_handle = ResourceHandle::new(id, self.texture_manager.clone());
+
+        let buffer_handle = self.create_buffer_with_data(
+            &BufferDescriptor {
+                debug_name: "texture staging buffer",
+                usage: vk::BufferUsageFlags::TRANSFER_SRC,
+                location: MemoryLocation::CpuToGpu,
+                ..Default::default()
+            },
+            data,
+            0,
+        );
+        self.copy_buffer_to_texture(&buffer_handle, &texture_handle, offset);
+
+        texture_handle
     }
 
     /// Creates or gets (if already created) a texture view, which can be cloned cheaply.

@@ -178,8 +178,8 @@ impl Canvas {
 
         let wallpaper_bytes = include_bytes!("./texture/95.jpg");
         let image = image::load_from_memory(wallpaper_bytes).unwrap();
-        let texture_handle = ctx.create_texture(
-            "fonts",
+        let texture_handle = ctx.create_texture_with_data(
+            "texture",
             &vk::ImageCreateInfo {
                 image_type: vk::ImageType::TYPE_2D,
                 format: vk::Format::R8G8B8A8_SRGB,
@@ -195,20 +195,11 @@ impl Canvas {
                 sharing_mode: vk::SharingMode::EXCLUSIVE,
                 ..Default::default()
             },
+            image.to_rgba8().as_bytes(),
+            0,
             false,
         );
 
-        let buffer_handle = ctx.create_buffer_with_data(
-            &BufferDescriptor {
-                debug_name: "fonts",
-                usage: vk::BufferUsageFlags::TRANSFER_SRC,
-                location: MemoryLocation::CpuToGpu,
-                ..Default::default()
-            },
-            bytemuck::cast_slice(image.to_rgba8().as_bytes()),
-            0,
-        );
-        ctx.copy_buffer_to_texture(&buffer_handle, &texture_handle);
         let view = ctx.get_texture_view(&texture_handle).unwrap();
 
         unsafe {
