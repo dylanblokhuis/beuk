@@ -1,6 +1,6 @@
 use ash::vk::{self, BufferCreateInfo};
 use gpu_allocator::vulkan::{Allocation, AllocationCreateDesc, Allocator};
-use std::sync::Arc;
+use std::{ptr::NonNull, sync::Arc};
 
 use crate::memory::ResourceHooks;
 
@@ -130,6 +130,32 @@ impl Buffer {
             mapped_slice.copy_from_slice(slice);
         }
         self.has_been_written_to = true;
+    }
+
+    pub fn cast<T>(&self) -> &T {
+        let Some(allocation) = self.allocation.as_ref() else {
+            panic!("Tried reading from buffer but buffer not allocated");
+        };
+
+        let Some(ptr) = allocation.mapped_ptr() else {
+            panic!("Tried reading from buffer but buffer not mapped");
+        };
+
+        let non_null_t_ptr: NonNull<T> = unsafe { NonNull::new_unchecked(ptr.as_ptr() as *mut T) };
+        unsafe { non_null_t_ptr.as_ref() }
+    }
+
+    pub fn cast_slice<T>(&self) -> &[T] {
+        let Some(allocation) = self.allocation.as_ref() else {
+            panic!("Tried reading from buffer but buffer not allocated");
+        };
+
+        let Some(ptr) = allocation.mapped_ptr() else {
+            panic!("Tried reading from buffer but buffer not mapped");
+        };
+
+        let non_null_t_ptr: NonNull<T> = unsafe { NonNull::new_unchecked(ptr.as_ptr() as *mut T) };
+        unsafe { std::slice::from_raw_parts(non_null_t_ptr.as_ptr(), self.size as usize) }
     }
 
     #[inline]

@@ -122,12 +122,6 @@ impl Canvas {
             0,
         );
 
-        // let index_buffer = ctx.buffer_manager.create_buffer_with_data(
-        //     "indices",
-        //     bytemuck::cast_slice(&[0u32, 1, 2]),
-        //     BufferUsageFlags::INDEX_BUFFER,
-        //     gpu_allocator::MemoryLocation::CpuToGpu,
-        // );
         let index_buffer = ctx.create_buffer_with_data(
             &BufferDescriptor {
                 debug_name: "indices",

@@ -133,6 +133,15 @@ pub enum IndexFormat {
     Uint32 = 1,
 }
 
+impl Into<vk::IndexType> for IndexFormat {
+    fn into(self) -> vk::IndexType {
+        match self {
+            IndexFormat::Uint16 => vk::IndexType::UINT16,
+            IndexFormat::Uint32 => vk::IndexType::UINT32,
+        }
+    }
+}
+
 /// Operation to perform on the stencil value.
 ///
 #[repr(C)]

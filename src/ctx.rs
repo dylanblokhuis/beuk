@@ -722,7 +722,7 @@ impl RenderContext {
         } else if std::thread::current().id() == self.thread_id {
             self.main_command_buffer.clone()
         } else {
-            panic!("Command buffer not found inside thread pool.")
+            self.main_command_buffer.clone()
         }
     }
 

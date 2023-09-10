@@ -371,6 +371,8 @@ impl Shader {
             }
         }
 
+        log::debug!("set_layout_info: {:#?}", set_layout_info);
+
         (set_layouts, set_layout_info)
     }
 
