@@ -1,4 +1,5 @@
 use std::{
+    borrow::Cow,
     collections::HashMap,
     hash::{Hash, Hasher},
 };
@@ -7,7 +8,6 @@ use ash::{
     vk::{self, CullModeFlags, DescriptorType, FrontFace, PolygonMode, PrimitiveTopology},
     Device,
 };
-use serde::ser::SerializeStruct;
 
 use crate::{ctx::RenderContext, memory::ResourceHooks, shaders::ImmutableShaderInfo};
 
@@ -498,35 +498,290 @@ impl Default for MultisampleState {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct Extent2d {
+    pub width: u32,
+    pub height: u32,
+}
+
+impl From<vk::Extent2D> for Extent2d {
+    fn from(extent: vk::Extent2D) -> Self {
+        Extent2d {
+            width: extent.width,
+            height: extent.height,
+        }
+    }
+}
+
+impl Into<vk::Extent2D> for Extent2d {
+    fn into(self) -> vk::Extent2D {
+        vk::Extent2D {
+            width: self.width,
+            height: self.height,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct Extent3d {
+    pub width: u32,
+    pub height: u32,
+    pub depth: u32,
+}
+
+impl From<vk::Extent3D> for Extent3d {
+    fn from(extent: vk::Extent3D) -> Self {
+        Extent3d {
+            width: extent.width,
+            height: extent.height,
+            depth: extent.depth,
+        }
+    }
+}
+
+impl Into<vk::Extent3D> for Extent3d {
+    fn into(self) -> vk::Extent3D {
+        vk::Extent3D {
+            width: self.width,
+            height: self.height,
+            depth: self.depth,
+        }
+    }
+}
+
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
+pub enum ShaderStages {
+    None,
+    Vertex,
+    Fragment,
+    Compute,
+    AllGraphics,
+}
+
+impl Into<vk::ShaderStageFlags> for ShaderStages {
+    fn into(self) -> vk::ShaderStageFlags {
+        match self {
+            ShaderStages::None => vk::ShaderStageFlags::empty(),
+            ShaderStages::Vertex => vk::ShaderStageFlags::VERTEX,
+            ShaderStages::Fragment => vk::ShaderStageFlags::FRAGMENT,
+            ShaderStages::Compute => vk::ShaderStageFlags::COMPUTE,
+            ShaderStages::AllGraphics => vk::ShaderStageFlags::ALL_GRAPHICS,
+        }
+    }
+}
+
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
+pub struct PushConstantRange {
+    pub stages: ShaderStages,
+    pub range: u32,
+    pub offset: u32,
+}
+
+impl Into<vk::PushConstantRange> for PushConstantRange {
+    fn into(self) -> vk::PushConstantRange {
+        vk::PushConstantRange {
+            stage_flags: self.stages.into(),
+            offset: self.offset,
+            size: self.range,
+        }
+    }
+}
+
+#[repr(C)]
+#[derive(Copy, Clone, Debug, Default, Hash, Eq, PartialEq)]
+pub enum VertexStepMode {
+    /// Vertex data is advanced every vertex.
+    #[default]
+    Vertex = 0,
+    /// Vertex data is advanced every instance.
+    Instance = 1,
+}
+
+/// [`vertex_attr_array`]: ../wgpu/macro.vertex_attr_array.html
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct VertexAttribute {
+    /// Format of the input
+    pub format: vk::Format,
+    /// Byte offset of the start of the input
+    pub offset: u32,
+    /// Location for this input. Must match the location in the shader.
+    pub shader_location: u32,
+}
+
+#[repr(C)]
+#[derive(Copy, Clone, Debug, Hash, Eq, PartialEq)]
+pub enum VertexFormat {
+    /// Two unsigned bytes (u8). `vec2<u32>` in shaders.
+    Uint8x2 = 0,
+    /// Four unsigned bytes (u8). `vec4<u32>` in shaders.
+    Uint8x4 = 1,
+    /// Two signed bytes (i8). `vec2<i32>` in shaders.
+    Sint8x2 = 2,
+    /// Four signed bytes (i8). `vec4<i32>` in shaders.
+    Sint8x4 = 3,
+    /// Two unsigned bytes (u8). [0, 255] converted to float [0, 1] `vec2<f32>` in shaders.
+    Unorm8x2 = 4,
+    /// Four unsigned bytes (u8). [0, 255] converted to float [0, 1] `vec4<f32>` in shaders.
+    Unorm8x4 = 5,
+    /// Two signed bytes (i8). [-127, 127] converted to float [-1, 1] `vec2<f32>` in shaders.
+    Snorm8x2 = 6,
+    /// Four signed bytes (i8). [-127, 127] converted to float [-1, 1] `vec4<f32>` in shaders.
+    Snorm8x4 = 7,
+    /// Two unsigned shorts (u16). `vec2<u32>` in shaders.
+    Uint16x2 = 8,
+    /// Four unsigned shorts (u16). `vec4<u32>` in shaders.
+    Uint16x4 = 9,
+    /// Two signed shorts (i16). `vec2<i32>` in shaders.
+    Sint16x2 = 10,
+    /// Four signed shorts (i16). `vec4<i32>` in shaders.
+    Sint16x4 = 11,
+    /// Two unsigned shorts (u16). [0, 65535] converted to float [0, 1] `vec2<f32>` in shaders.
+    Unorm16x2 = 12,
+    /// Four unsigned shorts (u16). [0, 65535] converted to float [0, 1] `vec4<f32>` in shaders.
+    Unorm16x4 = 13,
+    /// Two signed shorts (i16). [-32767, 32767] converted to float [-1, 1] `vec2<f32>` in shaders.
+    Snorm16x2 = 14,
+    /// Four signed shorts (i16). [-32767, 32767] converted to float [-1, 1] `vec4<f32>` in shaders.
+    Snorm16x4 = 15,
+    /// Two half-precision floats (no Rust equiv). `vec2<f32>` in shaders.
+    Float16x2 = 16,
+    /// Four half-precision floats (no Rust equiv). `vec4<f32>` in shaders.
+    Float16x4 = 17,
+    /// One single-precision float (f32). `f32` in shaders.
+    Float32 = 18,
+    /// Two single-precision floats (f32). `vec2<f32>` in shaders.
+    Float32x2 = 19,
+    /// Three single-precision floats (f32). `vec3<f32>` in shaders.
+    Float32x3 = 20,
+    /// Four single-precision floats (f32). `vec4<f32>` in shaders.
+    Float32x4 = 21,
+    /// One unsigned int (u32). `u32` in shaders.
+    Uint32 = 22,
+    /// Two unsigned ints (u32). `vec2<u32>` in shaders.
+    Uint32x2 = 23,
+    /// Three unsigned ints (u32). `vec3<u32>` in shaders.
+    Uint32x3 = 24,
+    /// Four unsigned ints (u32). `vec4<u32>` in shaders.
+    Uint32x4 = 25,
+    /// One signed int (i32). `i32` in shaders.
+    Sint32 = 26,
+    /// Two signed ints (i32). `vec2<i32>` in shaders.
+    Sint32x2 = 27,
+    /// Three signed ints (i32). `vec3<i32>` in shaders.
+    Sint32x3 = 28,
+    /// Four signed ints (i32). `vec4<i32>` in shaders.
+    Sint32x4 = 29,
+    /// One double-precision float (f64). `f32` in shaders. Requires [`Features::VERTEX_ATTRIBUTE_64BIT`].
+    Float64 = 30,
+    /// Two double-precision floats (f64). `vec2<f32>` in shaders. Requires [`Features::VERTEX_ATTRIBUTE_64BIT`].
+    Float64x2 = 31,
+    /// Three double-precision floats (f64). `vec3<f32>` in shaders. Requires [`Features::VERTEX_ATTRIBUTE_64BIT`].
+    Float64x3 = 32,
+    /// Four double-precision floats (f64). `vec4<f32>` in shaders. Requires [`Features::VERTEX_ATTRIBUTE_64BIT`].
+    Float64x4 = 33,
+}
+
+impl Into<vk::Format> for VertexFormat {
+    fn into(self) -> vk::Format {
+        match self {
+            VertexFormat::Uint8x2 => vk::Format::R8G8_UINT,
+            VertexFormat::Uint8x4 => vk::Format::R8G8B8A8_UINT,
+            VertexFormat::Sint8x2 => vk::Format::R8G8_SINT,
+            VertexFormat::Sint8x4 => vk::Format::R8G8B8A8_SINT,
+            VertexFormat::Unorm8x2 => vk::Format::R8G8_UNORM,
+            VertexFormat::Unorm8x4 => vk::Format::R8G8B8A8_UNORM,
+            VertexFormat::Snorm8x2 => vk::Format::R8G8_SNORM,
+            VertexFormat::Snorm8x4 => vk::Format::R8G8B8A8_SNORM,
+            VertexFormat::Uint16x2 => vk::Format::R16G16_UINT,
+            VertexFormat::Uint16x4 => vk::Format::R16G16B16A16_UINT,
+            VertexFormat::Sint16x2 => vk::Format::R16G16_SINT,
+            VertexFormat::Sint16x4 => vk::Format::R16G16B16A16_SINT,
+            VertexFormat::Unorm16x2 => vk::Format::R16G16_UNORM,
+            VertexFormat::Unorm16x4 => vk::Format::R16G16B16A16_UNORM,
+            VertexFormat::Snorm16x2 => vk::Format::R16G16_SNORM,
+            VertexFormat::Snorm16x4 => vk::Format::R16G16B16A16_SNORM,
+            VertexFormat::Float16x2 => vk::Format::R16G16_SFLOAT,
+            VertexFormat::Float16x4 => vk::Format::R16G16B16A16_SFLOAT,
+            VertexFormat::Float32 => vk::Format::R32_SFLOAT,
+            VertexFormat::Float32x2 => vk::Format::R32G32_SFLOAT,
+            VertexFormat::Float32x3 => vk::Format::R32G32B32_SFLOAT,
+            VertexFormat::Float32x4 => vk::Format::R32G32B32A32_SFLOAT,
+            VertexFormat::Uint32 => vk::Format::R32_UINT,
+            VertexFormat::Uint32x2 => vk::Format::R32G32_UINT,
+            VertexFormat::Uint32x3 => vk::Format::R32G32B32_UINT,
+            VertexFormat::Uint32x4 => vk::Format::R32G32B32A32_UINT,
+            VertexFormat::Sint32 => vk::Format::R32_SINT,
+            VertexFormat::Sint32x2 => vk::Format::R32G32_SINT,
+            VertexFormat::Sint32x3 => vk::Format::R32G32B32_SINT,
+            VertexFormat::Sint32x4 => vk::Format::R32G32B32A32_SINT,
+            VertexFormat::Float64 => vk::Format::R64_SFLOAT,
+            VertexFormat::Float64x2 => vk::Format::R64G64_SFLOAT,
+            VertexFormat::Float64x3 => vk::Format::R64G64B64_SFLOAT,
+            VertexFormat::Float64x4 => vk::Format::R64G64B64A64_SFLOAT,
+        }
+    }
+}
+
+impl VertexFormat {
+    /// Returns the byte size of the format.
+    pub const fn size(&self) -> u64 {
+        match self {
+            Self::Uint8x2 | Self::Sint8x2 | Self::Unorm8x2 | Self::Snorm8x2 => 2,
+            Self::Uint8x4
+            | Self::Sint8x4
+            | Self::Unorm8x4
+            | Self::Snorm8x4
+            | Self::Uint16x2
+            | Self::Sint16x2
+            | Self::Unorm16x2
+            | Self::Snorm16x2
+            | Self::Float16x2
+            | Self::Float32
+            | Self::Uint32
+            | Self::Sint32 => 4,
+            Self::Uint16x4
+            | Self::Sint16x4
+            | Self::Unorm16x4
+            | Self::Snorm16x4
+            | Self::Float16x4
+            | Self::Float32x2
+            | Self::Uint32x2
+            | Self::Sint32x2
+            | Self::Float64 => 8,
+            Self::Float32x3 | Self::Uint32x3 | Self::Sint32x3 => 12,
+            Self::Float32x4 | Self::Uint32x4 | Self::Sint32x4 | Self::Float64x2 => 16,
+            Self::Float64x3 => 24,
+            Self::Float64x4 => 32,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct VertexBufferLayout<'a> {
+    /// The stride, in bytes, between elements of this buffer.
+    pub array_stride: u32,
+    /// How often this vertex buffer is "stepped" forward.
+    pub step_mode: VertexStepMode,
+    /// The list of attributes which comprise a single vertex.
+    pub attributes: Cow<'a, [VertexAttribute]>,
+}
+
+#[derive(Clone, Debug, Hash)]
 pub struct GraphicsPipelineDescriptor<'a> {
     pub vertex_shader: Shader,
     pub fragment_shader: Shader,
-    pub vertex_input: vk::PipelineVertexInputStateCreateInfo<'a>,
+    pub vertex_input: Cow<'a, [VertexBufferLayout<'a>]>,
     pub color_attachment_formats: &'a [vk::Format],
     pub depth_attachment_format: vk::Format,
     /// Viewport dimensions. If `None`, the viewport will be the size of the swapchain.
-    pub viewport: Option<vk::Extent2D>,
+    pub viewport: Option<Extent2d>,
     pub primitive: PrimitiveState,
     pub depth_stencil: Option<DepthStencilState>,
-    pub push_constant_range: Option<vk::PushConstantRange>,
+    pub push_constant_range: Option<PushConstantRange>,
     /// Blend state for each color attachment
     pub blend: Vec<BlendState>,
     pub multisample: MultisampleState,
-}
-
-impl serde::ser::Serialize for GraphicsPipelineDescriptor<'_> {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: serde::Serializer,
-    {
-        let mut seq = serializer.serialize_struct("GraphicsPipelineDescriptor", 3)?;
-        seq.serialize_field("vertex_shader", &self.vertex_shader.spirv)
-            .unwrap();
-        seq.serialize_field("fragment_shader", &self.fragment_shader.spirv)
-            .unwrap();
-        seq.end()
-    }
 }
 
 #[derive(Debug, Default)]
@@ -596,7 +851,7 @@ impl GraphicsPipeline {
         device: &Device,
         desc: &GraphicsPipelineDescriptor,
         shader_info: &ImmutableShaderInfo,
-        swapchain_size: vk::Extent2D,
+        swapchain_size: Extent2d,
     ) -> Self {
         let vk_sample_mask = [
             desc.multisample.mask as u32,
@@ -651,16 +906,16 @@ impl GraphicsPipeline {
             .fragment_shader
             .create_descriptor_set_layouts(device, shader_info);
 
+        let push_constant_ranges: Vec<vk::PushConstantRange> = desc
+            .push_constant_range
+            .map_or(vec![], |range| vec![range.into()]);
+
         let pipeline_layout = unsafe {
             device
                 .create_pipeline_layout(
                     &vk::PipelineLayoutCreateInfo::default()
                         .set_layouts(&descriptor_set_layouts)
-                        .push_constant_ranges(
-                            desc.push_constant_range
-                                .as_ref()
-                                .map_or(&[], |range| std::slice::from_ref(range)),
-                        ),
+                        .push_constant_ranges(&push_constant_ranges),
                     None,
                 )
                 .unwrap()
@@ -736,7 +991,8 @@ impl GraphicsPipeline {
             max_depth: 1.0,
         }];
 
-        let scissors = vec![viewport.into()];
+        let vk_viewport: vk::Extent2D = viewport.into();
+        let scissors = vec![vk_viewport.into()];
         let viewport_state = vk::PipelineViewportStateCreateInfo::default()
             .scissors(&scissors)
             .viewports(&viewports);
@@ -745,9 +1001,35 @@ impl GraphicsPipeline {
             .color_attachment_formats(desc.color_attachment_formats)
             .depth_attachment_format(desc.depth_attachment_format);
 
+        let mut vertex_buffers = Vec::with_capacity(desc.vertex_input.len());
+        let mut vertex_attributes = Vec::new();
+
+        for (i, vb) in desc.vertex_input.iter().enumerate() {
+            vertex_buffers.push(vk::VertexInputBindingDescription {
+                binding: i as u32,
+                stride: vb.array_stride as u32,
+                input_rate: match vb.step_mode {
+                    VertexStepMode::Vertex => vk::VertexInputRate::VERTEX,
+                    VertexStepMode::Instance => vk::VertexInputRate::INSTANCE,
+                },
+            });
+            for at in vb.attributes.iter() {
+                vertex_attributes.push(vk::VertexInputAttributeDescription {
+                    location: at.shader_location,
+                    binding: i as u32,
+                    format: at.format.into(),
+                    offset: at.offset as u32,
+                });
+            }
+        }
+
+        let vk_vertex_input = vk::PipelineVertexInputStateCreateInfo::default()
+            .vertex_binding_descriptions(&vertex_buffers)
+            .vertex_attribute_descriptions(&vertex_attributes);
+
         let graphic_pipeline_info = vk::GraphicsPipelineCreateInfo::default()
             .stages(&shader_stages)
-            .vertex_input_state(&desc.vertex_input)
+            .vertex_input_state(&vk_vertex_input)
             .input_assembly_state(&input_assembly_state)
             .viewport_state(&viewport_state)
             .rasterization_state(&rasterization)

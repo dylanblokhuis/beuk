@@ -1,6 +1,7 @@
 use std::{
     collections::{BTreeMap, HashMap},
     ffi::CString,
+    hash::{Hash, Hasher},
     path::Path,
     sync::Arc,
 };
@@ -21,7 +22,14 @@ pub struct Shader {
     pub spirv: Vec<u8>,
 }
 
-#[derive(Clone, Debug, Default)]
+impl Hash for Shader {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.kind.hash(state);
+        self.spirv.hash(state);
+    }
+}
+
+#[derive(Clone, Debug, Default, Hash)]
 pub enum ShaderKind {
     #[default]
     Vertex,

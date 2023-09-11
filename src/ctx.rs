@@ -1250,7 +1250,7 @@ impl RenderContext {
                 yuv_conversion_samplers: self.yuv_immutable_samplers.clone(),
                 max_descriptor_count: self.max_descriptor_count,
             },
-            self.get_swapchain().surface_resolution,
+            self.get_swapchain().surface_resolution.into(),
         );
         let id = self.graphics_pipelines.create(pipeline);
         ResourceHandle::new(id, self.graphics_pipelines.clone())

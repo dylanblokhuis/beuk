@@ -1,9 +1,10 @@
+use ash::vk::VertexInputRate;
 use beuk::ash::vk::{self, BufferUsageFlags, PipelineVertexInputStateCreateInfo};
 use beuk::buffer::{Buffer, BufferDescriptor};
 use beuk::ctx::RenderContextDescriptor;
 
 use beuk::memory::ResourceHandle;
-use beuk::pipeline::{BlendState, GraphicsPipeline};
+use beuk::pipeline::{BlendState, GraphicsPipeline, VertexBufferLayout};
 use beuk::{
     ctx::RenderContext,
     pipeline::{GraphicsPipelineDescriptor, PrimitiveState},
@@ -119,6 +120,24 @@ impl Canvas {
 
         let swapchain: std::sync::RwLockReadGuard<'_, beuk::ctx::RenderSwapchain> =
             ctx.get_swapchain();
+
+        let vertex_buffers = [VertexBufferLayout {
+            array_stride: std::mem::size_of::<Vertex>() as u32,
+            step_mode: beuk::pipeline::VertexStepMode::Vertex,
+            attributes: &[
+                beuk::pipeline::VertexAttribute {
+                    shader_location: 0,
+                    format: vk::Format::R32G32B32A32_SFLOAT,
+                    offset: bytemuck::offset_of!(Vertex, pos) as u32,
+                },
+                beuk::pipeline::VertexAttribute {
+                    shader_location: 1,
+                    format: vk::Format::R32G32B32A32_SFLOAT,
+                    offset: bytemuck::offset_of!(Vertex, color) as u32,
+                },
+            ]
+            .into(),
+        }];
         let pipeline_handle = ctx.create_graphics_pipeline(&GraphicsPipelineDescriptor {
             vertex_shader: Shader::from_source_text(
                 &ctx.device,
@@ -134,26 +153,7 @@ impl Canvas {
                 beuk::shaders::ShaderKind::Fragment,
                 "main",
             ),
-            vertex_input: PipelineVertexInputStateCreateInfo::default()
-                .vertex_attribute_descriptions(&[
-                    vk::VertexInputAttributeDescription {
-                        location: 0,
-                        binding: 0,
-                        format: vk::Format::R32G32B32A32_SFLOAT,
-                        offset: bytemuck::offset_of!(Vertex, pos) as u32,
-                    },
-                    vk::VertexInputAttributeDescription {
-                        location: 1,
-                        binding: 0,
-                        format: vk::Format::R32G32B32A32_SFLOAT,
-                        offset: bytemuck::offset_of!(Vertex, color) as u32,
-                    },
-                ])
-                .vertex_binding_descriptions(&[vk::VertexInputBindingDescription {
-                    binding: 0,
-                    stride: std::mem::size_of::<Vertex>() as u32,
-                    input_rate: vk::VertexInputRate::VERTEX,
-                }]),
+            vertex_input: vertex_buffers,
             color_attachment_formats: &[swapchain.surface_format.format],
             depth_attachment_format: swapchain.depth_image_format,
             viewport: None,

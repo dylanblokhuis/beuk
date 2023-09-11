@@ -141,8 +141,6 @@ dependencies = [
  "raw-window-handle",
  "rayon",
  "rspirv-reflect",
- "serde",
- "serde-hashkey",
  "shaderc",
  "simple_logger",
  "tracing",
@@ -1416,15 +1414,6 @@ name = "serde"
 version = "1.0.171"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "30e27d1e4fd7659406c492fd6cfaf2066ba8773de45ca75e855590f856dc34a9"
-
-[[package]]
-name = "serde-hashkey"
-version = "0.4.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c13a90d3c31ebd0b83e38600c8117083ec4c4e1a7a0cab364e79e19706ade04e"
-dependencies = [
- "serde",
-]
 
 [[package]]
 name = "shaderc"
