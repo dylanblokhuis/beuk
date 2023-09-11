@@ -10,6 +10,10 @@ pub mod ash {
     pub use ash::*;
 }
 
+pub mod smallvec {
+    pub use smallvec::*;
+}
+
 pub mod raw_window_handle {
     pub use raw_window_handle::*;
 }

@@ -3,11 +3,13 @@ use beuk::buffer::MemoryLocation;
 use beuk::buffer::{Buffer, BufferDescriptor};
 use beuk::ctx::{RenderContextDescriptor, SamplerDesc};
 use beuk::memory::ResourceHandle;
-use beuk::pipeline::{BlendState, GraphicsPipeline, VertexBufferLayout};
+use beuk::pipeline::{
+    BlendState, FragmentState, GraphicsPipeline, VertexBufferLayout, VertexState,
+};
+use beuk::shaders::ShaderDescriptor;
 use beuk::{
     ctx::RenderContext,
     pipeline::{GraphicsPipelineDescriptor, PrimitiveState},
-    shaders::Shader,
 };
 use image::EncodableLayout;
 use raw_window_handle::{HasRawDisplayHandle, HasRawWindowHandle};
@@ -83,22 +85,6 @@ struct Vertex {
 
 impl Canvas {
     fn new(ctx: &RenderContext) -> Self {
-        let vertex_shader = Shader::from_source_text(
-            &ctx.device,
-            include_str!("./texture/shader.vert"),
-            "triangle.vert",
-            beuk::shaders::ShaderKind::Vertex,
-            "main",
-        );
-
-        let fragment_shader = Shader::from_source_text(
-            &ctx.device,
-            include_str!("./texture/shader.frag"),
-            "triangle.frag",
-            beuk::shaders::ShaderKind::Fragment,
-            "main",
-        );
-
         let vertex_buffer = ctx.create_buffer_with_data(
             &BufferDescriptor {
                 debug_name: "vertices",
@@ -136,26 +122,40 @@ impl Canvas {
 
         let swapchain = ctx.get_swapchain();
         let pipeline_handle = ctx.create_graphics_pipeline(GraphicsPipelineDescriptor {
-            vertex_shader,
-            fragment_shader,
-            vertex_input: smallvec![VertexBufferLayout {
-                array_stride: std::mem::size_of::<Vertex>() as u32,
-                step_mode: beuk::pipeline::VertexStepMode::Vertex,
-                attributes: smallvec![
-                    beuk::pipeline::VertexAttribute {
-                        shader_location: 0,
-                        format: vk::Format::R32G32B32A32_SFLOAT,
-                        offset: bytemuck::offset_of!(Vertex, pos) as u32,
-                    },
-                    beuk::pipeline::VertexAttribute {
-                        shader_location: 1,
-                        format: vk::Format::R32G32B32A32_SFLOAT,
-                        offset: bytemuck::offset_of!(Vertex, color) as u32,
-                    },
-                ],
-            }],
-            color_attachment_formats: smallvec![swapchain.surface_format.format],
-            depth_attachment_format: swapchain.depth_image_format,
+            vertex: VertexState {
+                shader: ctx.create_shader(ShaderDescriptor {
+                    kind: beuk::shaders::ShaderKind::Vertex,
+                    entry_point: "main".into(),
+                    source: include_str!("./texture/shader.vert").into(),
+                    ..Default::default()
+                }),
+                buffers: smallvec![VertexBufferLayout {
+                    array_stride: std::mem::size_of::<Vertex>() as u32,
+                    step_mode: beuk::pipeline::VertexStepMode::Vertex,
+                    attributes: smallvec![
+                        beuk::pipeline::VertexAttribute {
+                            shader_location: 0,
+                            format: vk::Format::R32G32B32A32_SFLOAT,
+                            offset: bytemuck::offset_of!(Vertex, pos) as u32,
+                        },
+                        beuk::pipeline::VertexAttribute {
+                            shader_location: 1,
+                            format: vk::Format::R32G32B32A32_SFLOAT,
+                            offset: bytemuck::offset_of!(Vertex, color) as u32,
+                        },
+                    ],
+                }],
+            },
+            fragment: FragmentState {
+                shader: ctx.create_shader(ShaderDescriptor {
+                    kind: beuk::shaders::ShaderKind::Fragment,
+                    entry_point: "main".into(),
+                    source: include_str!("./texture/shader.frag").into(),
+                    ..Default::default()
+                }),
+                color_attachment_formats: smallvec![swapchain.surface_format.format],
+                depth_attachment_format: swapchain.depth_image_format,
+            },
             viewport: None,
             primitive: PrimitiveState {
                 topology: vk::PrimitiveTopology::TRIANGLE_LIST,

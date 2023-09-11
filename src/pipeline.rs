@@ -1,6 +1,8 @@
 use std::{
+    borrow::Cow,
     collections::HashMap,
     hash::{Hash, Hasher},
+    sync::Arc,
 };
 
 use ash::{
@@ -9,7 +11,11 @@ use ash::{
 };
 use smallvec::SmallVec;
 
-use crate::{ctx::RenderContext, memory::ResourceHooks, shaders::ImmutableShaderInfo};
+use crate::{
+    ctx::RenderContext,
+    memory::{ResourceHandle, ResourceHooks, ResourceManager},
+    shaders::ImmutableShaderInfo,
+};
 
 use super::shaders::Shader;
 
@@ -767,13 +773,24 @@ pub struct VertexBufferLayout {
     pub attributes: SmallVec<[VertexAttribute; 10]>,
 }
 
-#[derive(Clone, Debug, Hash, PartialEq, Eq)]
-pub struct GraphicsPipelineDescriptor {
-    pub vertex_shader: Shader,
-    pub fragment_shader: Shader,
-    pub vertex_input: SmallVec<[VertexBufferLayout; 2]>,
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct VertexState {
+    pub shader: ResourceHandle<Shader>,
+    pub buffers: SmallVec<[VertexBufferLayout; 2]>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct FragmentState {
+    pub shader: ResourceHandle<Shader>,
     pub color_attachment_formats: SmallVec<[vk::Format; 8]>,
     pub depth_attachment_format: vk::Format,
+}
+
+#[derive(Clone, Debug, Hash, PartialEq, Eq)]
+pub struct GraphicsPipelineDescriptor {
+    pub vertex: VertexState,
+    pub fragment: FragmentState,
+
     /// Viewport dimensions. If `None`, the viewport will be the size of the swapchain.
     pub viewport: Option<Extent2d>,
     pub primitive: PrimitiveState,
@@ -796,8 +813,6 @@ pub struct GraphicsPipeline {
     pub depth_attachment: vk::Format,
     pub viewports: Vec<vk::Viewport>,
     pub scissors: Vec<vk::Rect2D>,
-    pub vertex_shader: Shader,
-    pub fragment_shader: Shader,
 }
 
 impl ResourceHooks for GraphicsPipeline {
@@ -852,6 +867,7 @@ impl GraphicsPipeline {
         desc: &GraphicsPipelineDescriptor,
         shader_info: &ImmutableShaderInfo,
         swapchain_size: Extent2d,
+        shader_manager: Arc<ResourceManager<Shader>>,
     ) -> Self {
         let vk_sample_mask = [
             desc.multisample.mask as u32,
@@ -864,8 +880,8 @@ impl GraphicsPipeline {
                 .sample_mask(&vk_sample_mask);
 
         let mut color_blend_attachment_states =
-            Vec::with_capacity(desc.color_attachment_formats.len());
-        for _ in desc.color_attachment_formats.iter() {
+            Vec::with_capacity(desc.fragment.color_attachment_formats.len());
+        for _ in desc.fragment.color_attachment_formats.iter() {
             color_blend_attachment_states.push(
                 vk::PipelineColorBlendAttachmentState::default()
                     .color_write_mask(vk::ColorComponentFlags::RGBA),
@@ -886,7 +902,7 @@ impl GraphicsPipeline {
                 .dst_alpha_blend_factor(alpha_dst);
         }
         assert!(
-            color_blend_attachment_states.len() == desc.color_attachment_formats.len(),
+            color_blend_attachment_states.len() == desc.fragment.color_attachment_formats.len(),
             "Each color attachment must have a blend state if writing to BlendState"
         );
 
@@ -902,9 +918,9 @@ impl GraphicsPipeline {
         let dynamic_state_info =
             vk::PipelineDynamicStateCreateInfo::default().dynamic_states(&dynamic_state);
 
-        let (descriptor_set_layouts, set_layout_info) = desc
-            .fragment_shader
-            .create_descriptor_set_layouts(device, shader_info);
+        let fragment_shader = shader_manager.get(&desc.fragment.shader).unwrap();
+        let (descriptor_set_layouts, set_layout_info) =
+            fragment_shader.create_descriptor_set_layouts(device, shader_info);
 
         let push_constant_ranges: Vec<vk::PushConstantRange> = desc
             .push_constant_range
@@ -965,15 +981,16 @@ impl GraphicsPipeline {
             }
         }
 
+        let vertex_shader = shader_manager.get(&desc.vertex.shader).unwrap();
         let shader_stages = [
             vk::PipelineShaderStageCreateInfo::default()
-                .name(&desc.vertex_shader.entry_point_cstr)
+                .name(&vertex_shader.entry_point_cstr)
                 .stage(vk::ShaderStageFlags::VERTEX)
-                .module(desc.vertex_shader.module),
+                .module(vertex_shader.module),
             vk::PipelineShaderStageCreateInfo::default()
-                .name(&desc.fragment_shader.entry_point_cstr)
+                .name(&fragment_shader.entry_point_cstr)
                 .stage(vk::ShaderStageFlags::FRAGMENT)
-                .module(desc.fragment_shader.module),
+                .module(fragment_shader.module),
         ];
 
         let input_assembly_state = vk::PipelineInputAssemblyStateCreateInfo::default()
@@ -998,13 +1015,13 @@ impl GraphicsPipeline {
             .viewports(&viewports);
 
         let mut rendering_info = vk::PipelineRenderingCreateInfo::default()
-            .color_attachment_formats(&desc.color_attachment_formats)
-            .depth_attachment_format(desc.depth_attachment_format);
+            .color_attachment_formats(&desc.fragment.color_attachment_formats)
+            .depth_attachment_format(desc.fragment.depth_attachment_format);
 
-        let mut vertex_buffers = Vec::with_capacity(desc.vertex_input.len());
+        let mut vertex_buffers = Vec::with_capacity(desc.vertex.buffers.len());
         let mut vertex_attributes = Vec::new();
 
-        for (i, vb) in desc.vertex_input.iter().enumerate() {
+        for (i, vb) in desc.vertex.buffers.iter().enumerate() {
             vertex_buffers.push(vk::VertexInputBindingDescription {
                 binding: i as u32,
                 stride: vb.array_stride,
@@ -1051,7 +1068,7 @@ impl GraphicsPipeline {
         };
 
         let (descriptor_sets, descriptor_pool) = if !set_layout_info.is_empty() {
-            desc.fragment_shader.create_descriptor_sets(
+            fragment_shader.create_descriptor_sets(
                 device,
                 shader_info,
                 &descriptor_set_layouts,
@@ -1067,12 +1084,10 @@ impl GraphicsPipeline {
             descriptor_set_layouts,
             set_layout_info,
             descriptor_sets,
-            color_attachments: desc.color_attachment_formats.to_vec(),
-            depth_attachment: desc.depth_attachment_format,
+            color_attachments: desc.fragment.color_attachment_formats.to_vec(),
+            depth_attachment: desc.fragment.depth_attachment_format,
             viewports,
             scissors,
-            vertex_shader: desc.vertex_shader.clone(),
-            fragment_shader: desc.fragment_shader.clone(),
             descriptor_pool,
         }
     }
@@ -1107,9 +1122,6 @@ impl GraphicsPipeline {
         unsafe {
             device.destroy_pipeline_layout(self.layout, None);
             device.destroy_pipeline(self.pipeline, None);
-
-            device.destroy_shader_module(self.vertex_shader.module, None);
-            device.destroy_shader_module(self.fragment_shader.module, None);
 
             if !self.descriptor_sets.is_empty() {
                 device

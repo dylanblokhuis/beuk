@@ -34,7 +34,7 @@ use crate::{
     buffer::{Buffer, BufferDescriptor, MemoryLocation},
     memory::{ResourceHandle, ResourceManager},
     pipeline::{GraphicsPipeline, GraphicsPipelineDescriptor},
-    shaders::ImmutableShaderInfo,
+    shaders::{ImmutableShaderInfo, Shader, ShaderDescriptor},
     texture::{Texture, TransitionDesc},
 };
 
@@ -121,6 +121,8 @@ pub struct RenderContext {
     pub texture_manager: Arc<ResourceManager<Texture>>,
     pub graphics_pipelines: Arc<ResourceManager<GraphicsPipeline>>,
     pub immutable_samplers: Arc<HashMap<SamplerDesc, vk::Sampler>>,
+    pub shader_manager: Arc<ResourceManager<Shader>>,
+    pub shader_mapping: Arc<RwLock<HashMap<ShaderDescriptor, ResourceHandle<Shader>>>>,
     pub graphics_pipeline_mapping:
         Arc<RwLock<HashMap<Arc<GraphicsPipelineDescriptor>, ResourceHandle<GraphicsPipeline>>>>,
 
@@ -398,6 +400,8 @@ impl RenderContext {
             let texture_manager = ResourceManager::new(arc_device.clone(), allocator.clone(), 512);
             let graphics_pipelines =
                 ResourceManager::new(arc_device.clone(), allocator.clone(), 64);
+            let shader_manager =
+                ResourceManager::new(arc_device.clone(), allocator.clone(), 64 * 2);
 
             let present_queue = Arc::new(Mutex::new(present_queue));
             let thread_id = std::thread::current().id();
@@ -416,8 +420,10 @@ impl RenderContext {
                 buffer_manager: Arc::new(buffer_manager),
                 texture_manager: Arc::new(texture_manager),
                 graphics_pipelines: Arc::new(graphics_pipelines),
+                shader_manager: Arc::new(shader_manager),
                 immutable_samplers: Arc::new(create_immutable_samplers(&device)),
                 yuv_immutable_samplers: Arc::new(create_immutable_yuv_samplers(&device)),
+                shader_mapping: Arc::new(RwLock::new(HashMap::default())),
                 thread_id,
                 // TODO: fetch from device
                 max_descriptor_count: {
@@ -1240,6 +1246,23 @@ impl RenderContext {
         Some(texture.create_view(&self.device))
     }
 
+    /// If a shader with this descriptor already exists, it will be returned, otherwise a new one will be created.
+    pub fn create_shader(&self, desc: ShaderDescriptor) -> ResourceHandle<Shader> {
+        if let Some(handle) = self.shader_mapping.read().unwrap().get(&desc) {
+            return handle.clone();
+        }
+
+        let id = self.shader_manager.create(Shader::from_source_text(
+            &self.device,
+            &desc.source,
+            &desc.label.unwrap_or("Unnamed".to_string()),
+            desc.kind,
+            &desc.entry_point,
+            &desc.defines,
+        ));
+        ResourceHandle::new(id, self.shader_manager.clone())
+    }
+
     /// if a pipeline with this descriptor already exists, it will be returned, otherwise a new one will be created.
     pub fn create_graphics_pipeline(
         &self,
@@ -1259,6 +1282,7 @@ impl RenderContext {
                 max_descriptor_count: self.max_descriptor_count,
             },
             self.get_swapchain().surface_resolution.into(),
+            self.shader_manager.clone(),
         );
         let id = self.graphics_pipelines.create(pipeline);
         let handle = ResourceHandle::new(id, self.graphics_pipelines.clone());

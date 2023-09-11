@@ -1,4 +1,5 @@
 use std::{
+    borrow::Cow,
     collections::{BTreeMap, HashMap},
     ffi::CString,
     hash::{Hash, Hasher},
@@ -10,7 +11,38 @@ use ash::vk::{self, Filter, SamplerAddressMode, SamplerMipmapMode};
 use rspirv_reflect::BindingCount;
 use shaderc::CompilationArtifact;
 
-use crate::{chunky_list::TempList, ctx::SamplerDesc};
+use crate::{
+    chunky_list::TempList, ctx::SamplerDesc, memory::ResourceHooks, pipeline::ShaderStages,
+};
+
+impl ResourceHooks for Shader {
+    fn cleanup(
+        &mut self,
+        device: Arc<ash::Device>,
+        _allocator: Arc<std::sync::Mutex<gpu_allocator::vulkan::Allocator>>,
+    ) {
+        unsafe {
+            device.destroy_shader_module(self.module, None);
+        }
+    }
+
+    fn on_swapchain_resize(
+        &mut self,
+        _ctx: &crate::ctx::RenderContext,
+        _old_surface_resolution: vk::Extent2D,
+        _new_surface_resolution: vk::Extent2D,
+    ) {
+    }
+}
+
+#[derive(Clone, Debug, Default, Hash, PartialEq, Eq)]
+pub struct ShaderDescriptor {
+    pub label: Option<String>,
+    pub source: Cow<'static, str>,
+    pub kind: ShaderKind,
+    pub defines: Vec<(String, Option<String>)>,
+    pub entry_point: Cow<'static, str>,
+}
 
 #[derive(Clone, Debug, Default, Eq)]
 pub struct Shader {
@@ -396,10 +428,23 @@ impl Shader {
         debug_filename: &str,
         kind: ShaderKind,
         entry_point: &str,
+        defines: &[(String, Option<String>)],
     ) -> Self {
         let compiler = shaderc::Compiler::new().unwrap();
         let mut options = shaderc::CompileOptions::new().unwrap();
         options.add_macro_definition("EP", Some("main"));
+
+        for (name, value) in defines {
+            options.add_macro_definition(
+                name,
+                if let Some(value) = value {
+                    Some(value)
+                } else {
+                    None
+                },
+            );
+        }
+
         options.set_target_env(
             shaderc::TargetEnv::Vulkan,
             shaderc::EnvVersion::Vulkan1_2 as u32,
@@ -443,6 +488,7 @@ impl Shader {
         path: &str,
         kind: ShaderKind,
         entry_point: &str,
+        defines: &[(String, Option<String>)],
     ) -> Self {
         Self::from_source_text(
             device,
@@ -450,6 +496,7 @@ impl Shader {
             path,
             kind,
             entry_point,
+            defines,
         )
     }
 }

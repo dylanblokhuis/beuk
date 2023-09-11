@@ -1,6 +1,7 @@
 use std::{
     cell::UnsafeCell,
     fmt::{Debug, Formatter},
+    hash::Hash,
     sync::{Arc, Mutex},
 };
 
@@ -41,6 +42,20 @@ pub trait ResourceHooks {
 pub struct ResourceHandle<T: Default + Debug + ResourceHooks> {
     id: ResourceId,
     manager: Arc<ResourceManager<T>>,
+}
+
+impl<T: Default + Debug + ResourceHooks> PartialEq for ResourceHandle<T> {
+    fn eq(&self, other: &Self) -> bool {
+        self.id == other.id
+    }
+}
+
+impl<T: Default + Debug + ResourceHooks> Eq for ResourceHandle<T> {}
+
+impl<T: Default + Debug + ResourceHooks> Hash for ResourceHandle<T> {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.id.hash(state);
+    }
 }
 
 impl<T: Default + Debug + ResourceHooks> ResourceHandle<T> {
