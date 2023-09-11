@@ -12,7 +12,7 @@ use shaderc::CompilationArtifact;
 
 use crate::{chunky_list::TempList, ctx::SamplerDesc};
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, Eq)]
 pub struct Shader {
     pub kind: ShaderKind,
     pub spirv_descripor_set_layouts: StageDescriptorSetLayouts,
@@ -29,7 +29,13 @@ impl Hash for Shader {
     }
 }
 
-#[derive(Clone, Debug, Default, Hash)]
+impl PartialEq for Shader {
+    fn eq(&self, other: &Self) -> bool {
+        self.kind == other.kind && self.spirv == other.spirv
+    }
+}
+
+#[derive(Clone, Debug, Default, Hash, PartialEq, Eq)]
 pub enum ShaderKind {
     #[default]
     Vertex,

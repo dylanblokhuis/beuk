@@ -1,5 +1,4 @@
 use std::{
-    borrow::Cow,
     collections::HashMap,
     hash::{Hash, Hasher},
 };
@@ -8,6 +7,7 @@ use ash::{
     vk::{self, CullModeFlags, DescriptorType, FrontFace, PolygonMode, PrimitiveTopology},
     Device,
 };
+use smallvec::SmallVec;
 
 use crate::{ctx::RenderContext, memory::ResourceHooks, shaders::ImmutableShaderInfo};
 
@@ -133,9 +133,9 @@ pub enum IndexFormat {
     Uint32 = 1,
 }
 
-impl Into<vk::IndexType> for IndexFormat {
-    fn into(self) -> vk::IndexType {
-        match self {
+impl From<IndexFormat> for vk::IndexType {
+    fn from(val: IndexFormat) -> Self {
+        match val {
             IndexFormat::Uint16 => vk::IndexType::UINT16,
             IndexFormat::Uint32 => vk::IndexType::UINT32,
         }
@@ -513,11 +513,11 @@ impl From<vk::Extent2D> for Extent2d {
     }
 }
 
-impl Into<vk::Extent2D> for Extent2d {
-    fn into(self) -> vk::Extent2D {
+impl From<Extent2d> for vk::Extent2D {
+    fn from(val: Extent2d) -> Self {
         vk::Extent2D {
-            width: self.width,
-            height: self.height,
+            width: val.width,
+            height: val.height,
         }
     }
 }
@@ -539,12 +539,12 @@ impl From<vk::Extent3D> for Extent3d {
     }
 }
 
-impl Into<vk::Extent3D> for Extent3d {
-    fn into(self) -> vk::Extent3D {
+impl From<Extent3d> for vk::Extent3D {
+    fn from(val: Extent3d) -> Self {
         vk::Extent3D {
-            width: self.width,
-            height: self.height,
-            depth: self.depth,
+            width: val.width,
+            height: val.height,
+            depth: val.depth,
         }
     }
 }
@@ -558,9 +558,9 @@ pub enum ShaderStages {
     AllGraphics,
 }
 
-impl Into<vk::ShaderStageFlags> for ShaderStages {
-    fn into(self) -> vk::ShaderStageFlags {
-        match self {
+impl From<ShaderStages> for vk::ShaderStageFlags {
+    fn from(val: ShaderStages) -> Self {
+        match val {
             ShaderStages::None => vk::ShaderStageFlags::empty(),
             ShaderStages::Vertex => vk::ShaderStageFlags::VERTEX,
             ShaderStages::Fragment => vk::ShaderStageFlags::FRAGMENT,
@@ -577,12 +577,12 @@ pub struct PushConstantRange {
     pub offset: u32,
 }
 
-impl Into<vk::PushConstantRange> for PushConstantRange {
-    fn into(self) -> vk::PushConstantRange {
+impl From<PushConstantRange> for vk::PushConstantRange {
+    fn from(val: PushConstantRange) -> Self {
         vk::PushConstantRange {
-            stage_flags: self.stages.into(),
-            offset: self.offset,
-            size: self.range,
+            stage_flags: val.stages.into(),
+            offset: val.offset,
+            size: val.range,
         }
     }
 }
@@ -682,9 +682,9 @@ pub enum VertexFormat {
     Float64x4 = 33,
 }
 
-impl Into<vk::Format> for VertexFormat {
-    fn into(self) -> vk::Format {
-        match self {
+impl From<VertexFormat> for vk::Format {
+    fn from(val: VertexFormat) -> Self {
+        match val {
             VertexFormat::Uint8x2 => vk::Format::R8G8_UINT,
             VertexFormat::Uint8x4 => vk::Format::R8G8B8A8_UINT,
             VertexFormat::Sint8x2 => vk::Format::R8G8_SINT,
@@ -758,21 +758,21 @@ impl VertexFormat {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub struct VertexBufferLayout<'a> {
+pub struct VertexBufferLayout {
     /// The stride, in bytes, between elements of this buffer.
     pub array_stride: u32,
     /// How often this vertex buffer is "stepped" forward.
     pub step_mode: VertexStepMode,
     /// The list of attributes which comprise a single vertex.
-    pub attributes: Cow<'a, [VertexAttribute]>,
+    pub attributes: SmallVec<[VertexAttribute; 10]>,
 }
 
-#[derive(Clone, Debug, Hash)]
-pub struct GraphicsPipelineDescriptor<'a> {
+#[derive(Clone, Debug, Hash, PartialEq, Eq)]
+pub struct GraphicsPipelineDescriptor {
     pub vertex_shader: Shader,
     pub fragment_shader: Shader,
-    pub vertex_input: Cow<'a, [VertexBufferLayout<'a>]>,
-    pub color_attachment_formats: &'a [vk::Format],
+    pub vertex_input: SmallVec<[VertexBufferLayout; 2]>,
+    pub color_attachment_formats: SmallVec<[vk::Format; 8]>,
     pub depth_attachment_format: vk::Format,
     /// Viewport dimensions. If `None`, the viewport will be the size of the swapchain.
     pub viewport: Option<Extent2d>,
@@ -865,7 +865,7 @@ impl GraphicsPipeline {
 
         let mut color_blend_attachment_states =
             Vec::with_capacity(desc.color_attachment_formats.len());
-        for _ in desc.color_attachment_formats {
+        for _ in desc.color_attachment_formats.iter() {
             color_blend_attachment_states.push(
                 vk::PipelineColorBlendAttachmentState::default()
                     .color_write_mask(vk::ColorComponentFlags::RGBA),
@@ -998,7 +998,7 @@ impl GraphicsPipeline {
             .viewports(&viewports);
 
         let mut rendering_info = vk::PipelineRenderingCreateInfo::default()
-            .color_attachment_formats(desc.color_attachment_formats)
+            .color_attachment_formats(&desc.color_attachment_formats)
             .depth_attachment_format(desc.depth_attachment_format);
 
         let mut vertex_buffers = Vec::with_capacity(desc.vertex_input.len());
@@ -1007,7 +1007,7 @@ impl GraphicsPipeline {
         for (i, vb) in desc.vertex_input.iter().enumerate() {
             vertex_buffers.push(vk::VertexInputBindingDescription {
                 binding: i as u32,
-                stride: vb.array_stride as u32,
+                stride: vb.array_stride,
                 input_rate: match vb.step_mode {
                     VertexStepMode::Vertex => vk::VertexInputRate::VERTEX,
                     VertexStepMode::Instance => vk::VertexInputRate::INSTANCE,
@@ -1017,8 +1017,8 @@ impl GraphicsPipeline {
                 vertex_attributes.push(vk::VertexInputAttributeDescription {
                     location: at.shader_location,
                     binding: i as u32,
-                    format: at.format.into(),
-                    offset: at.offset as u32,
+                    format: at.format,
+                    offset: at.offset,
                 });
             }
         }

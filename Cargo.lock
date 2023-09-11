@@ -128,7 +128,6 @@ name = "beuk"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "arrayvec",
  "ash",
  "ash-window",
  "boxcar",
@@ -143,6 +142,7 @@ dependencies = [
  "rspirv-reflect",
  "shaderc",
  "simple_logger",
+ "smallvec",
  "tracing",
  "tracing-subscriber",
  "tracing-tracy",

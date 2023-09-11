@@ -121,6 +121,9 @@ pub struct RenderContext {
     pub texture_manager: Arc<ResourceManager<Texture>>,
     pub graphics_pipelines: Arc<ResourceManager<GraphicsPipeline>>,
     pub immutable_samplers: Arc<HashMap<SamplerDesc, vk::Sampler>>,
+    pub graphics_pipeline_mapping:
+        Arc<RwLock<HashMap<Arc<GraphicsPipelineDescriptor>, ResourceHandle<GraphicsPipeline>>>>,
+
     pub yuv_immutable_samplers:
         Arc<HashMap<(vk::Format, SamplerDesc), (vk::SamplerYcbcrConversion, vk::Sampler)>>,
     pub allocator: Arc<Mutex<Allocator>>,
@@ -440,6 +443,7 @@ impl RenderContext {
                 debug_call_back,
                 debug_utils_loader,
                 is_resizing: AtomicBool::new(false),
+                graphics_pipeline_mapping: Arc::new(RwLock::new(HashMap::default())),
             }
         }
     }
@@ -719,8 +723,6 @@ impl RenderContext {
             drop(threaded_command_buffers);
 
             lock
-        } else if std::thread::current().id() == self.thread_id {
-            self.main_command_buffer.clone()
         } else {
             self.main_command_buffer.clone()
         }
@@ -1238,13 +1240,19 @@ impl RenderContext {
         Some(texture.create_view(&self.device))
     }
 
+    /// if a pipeline with this descriptor already exists, it will be returned, otherwise a new one will be created.
     pub fn create_graphics_pipeline(
         &self,
-        desc: &GraphicsPipelineDescriptor,
+        desc: GraphicsPipelineDescriptor,
     ) -> ResourceHandle<GraphicsPipeline> {
+        if let Some(handle) = self.graphics_pipeline_mapping.read().unwrap().get(&desc) {
+            return handle.clone();
+        }
+
+        let pipeline_desc = Arc::new(desc);
         let pipeline = GraphicsPipeline::new(
             &self.device,
-            desc,
+            &pipeline_desc,
             &ImmutableShaderInfo {
                 immutable_samplers: self.immutable_samplers.clone(),
                 yuv_conversion_samplers: self.yuv_immutable_samplers.clone(),
@@ -1253,7 +1261,10 @@ impl RenderContext {
             self.get_swapchain().surface_resolution.into(),
         );
         let id = self.graphics_pipelines.create(pipeline);
-        ResourceHandle::new(id, self.graphics_pipelines.clone())
+        let handle = ResourceHandle::new(id, self.graphics_pipelines.clone());
+        let mut mapping = self.graphics_pipeline_mapping.write().unwrap();
+        mapping.insert(pipeline_desc, handle.clone());
+        handle
     }
 
     /// Returns a read lock to the render swapchain.

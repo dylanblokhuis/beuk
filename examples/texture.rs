@@ -1,9 +1,9 @@
-use beuk::ash::vk::{self, BufferUsageFlags, PipelineVertexInputStateCreateInfo};
+use beuk::ash::vk::{self, BufferUsageFlags};
 use beuk::buffer::MemoryLocation;
 use beuk::buffer::{Buffer, BufferDescriptor};
 use beuk::ctx::{RenderContextDescriptor, SamplerDesc};
 use beuk::memory::ResourceHandle;
-use beuk::pipeline::{BlendState, GraphicsPipeline};
+use beuk::pipeline::{BlendState, GraphicsPipeline, VertexBufferLayout};
 use beuk::{
     ctx::RenderContext,
     pipeline::{GraphicsPipelineDescriptor, PrimitiveState},
@@ -11,6 +11,7 @@ use beuk::{
 };
 use image::EncodableLayout;
 use raw_window_handle::{HasRawDisplayHandle, HasRawWindowHandle};
+use smallvec::smallvec;
 use tracing_subscriber::prelude::__tracing_subscriber_SubscriberExt;
 use winit::{
     event::{Event, WindowEvent},
@@ -134,30 +135,26 @@ impl Canvas {
         );
 
         let swapchain = ctx.get_swapchain();
-        let pipeline_handle = ctx.create_graphics_pipeline(&GraphicsPipelineDescriptor {
+        let pipeline_handle = ctx.create_graphics_pipeline(GraphicsPipelineDescriptor {
             vertex_shader,
             fragment_shader,
-            vertex_input: PipelineVertexInputStateCreateInfo::default()
-                .vertex_attribute_descriptions(&[
-                    vk::VertexInputAttributeDescription {
-                        location: 0,
-                        binding: 0,
+            vertex_input: smallvec![VertexBufferLayout {
+                array_stride: std::mem::size_of::<Vertex>() as u32,
+                step_mode: beuk::pipeline::VertexStepMode::Vertex,
+                attributes: smallvec![
+                    beuk::pipeline::VertexAttribute {
+                        shader_location: 0,
                         format: vk::Format::R32G32B32A32_SFLOAT,
                         offset: bytemuck::offset_of!(Vertex, pos) as u32,
                     },
-                    vk::VertexInputAttributeDescription {
-                        location: 1,
-                        binding: 0,
+                    beuk::pipeline::VertexAttribute {
+                        shader_location: 1,
                         format: vk::Format::R32G32B32A32_SFLOAT,
                         offset: bytemuck::offset_of!(Vertex, color) as u32,
                     },
-                ])
-                .vertex_binding_descriptions(&[vk::VertexInputBindingDescription {
-                    binding: 0,
-                    stride: std::mem::size_of::<Vertex>() as u32,
-                    input_rate: vk::VertexInputRate::VERTEX,
-                }]),
-            color_attachment_formats: &[swapchain.surface_format.format],
+                ],
+            }],
+            color_attachment_formats: smallvec![swapchain.surface_format.format],
             depth_attachment_format: swapchain.depth_image_format,
             viewport: None,
             primitive: PrimitiveState {

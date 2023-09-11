@@ -1,5 +1,4 @@
-use ash::vk::VertexInputRate;
-use beuk::ash::vk::{self, BufferUsageFlags, PipelineVertexInputStateCreateInfo};
+use beuk::ash::vk::{self, BufferUsageFlags};
 use beuk::buffer::{Buffer, BufferDescriptor};
 use beuk::ctx::RenderContextDescriptor;
 
@@ -11,6 +10,7 @@ use beuk::{
     shaders::Shader,
 };
 use raw_window_handle::{HasRawDisplayHandle, HasRawWindowHandle};
+use smallvec::smallvec;
 use std::sync::Arc;
 use winit::{
     event::{Event, WindowEvent},
@@ -20,11 +20,11 @@ use winit::{
 
 fn main() {
     simple_logger::SimpleLogger::new().init().unwrap();
-    use tracing_subscriber::layer::SubscriberExt;
-    tracing::subscriber::set_global_default(
-        tracing_subscriber::registry().with(tracing_tracy::TracyLayer::new()),
-    )
-    .expect("set up the subscriber");
+    // use tracing_subscriber::layer::SubscriberExt;
+    // tracing::subscriber::set_global_default(
+    //     tracing_subscriber::registry().with(tracing_tracy::TracyLayer::new()),
+    // )
+    // .expect("set up the subscriber");
 
     let event_loop = EventLoop::new();
 
@@ -121,24 +121,7 @@ impl Canvas {
         let swapchain: std::sync::RwLockReadGuard<'_, beuk::ctx::RenderSwapchain> =
             ctx.get_swapchain();
 
-        let vertex_buffers = [VertexBufferLayout {
-            array_stride: std::mem::size_of::<Vertex>() as u32,
-            step_mode: beuk::pipeline::VertexStepMode::Vertex,
-            attributes: &[
-                beuk::pipeline::VertexAttribute {
-                    shader_location: 0,
-                    format: vk::Format::R32G32B32A32_SFLOAT,
-                    offset: bytemuck::offset_of!(Vertex, pos) as u32,
-                },
-                beuk::pipeline::VertexAttribute {
-                    shader_location: 1,
-                    format: vk::Format::R32G32B32A32_SFLOAT,
-                    offset: bytemuck::offset_of!(Vertex, color) as u32,
-                },
-            ]
-            .into(),
-        }];
-        let pipeline_handle = ctx.create_graphics_pipeline(&GraphicsPipelineDescriptor {
+        let pipeline_handle = ctx.create_graphics_pipeline(GraphicsPipelineDescriptor {
             vertex_shader: Shader::from_source_text(
                 &ctx.device,
                 include_str!("./triangle/shader.vert"),
@@ -153,8 +136,23 @@ impl Canvas {
                 beuk::shaders::ShaderKind::Fragment,
                 "main",
             ),
-            vertex_input: vertex_buffers,
-            color_attachment_formats: &[swapchain.surface_format.format],
+            vertex_input: smallvec![VertexBufferLayout {
+                array_stride: std::mem::size_of::<Vertex>() as u32,
+                step_mode: beuk::pipeline::VertexStepMode::Vertex,
+                attributes: smallvec![
+                    beuk::pipeline::VertexAttribute {
+                        shader_location: 0,
+                        format: vk::Format::R32G32B32A32_SFLOAT,
+                        offset: bytemuck::offset_of!(Vertex, pos) as u32,
+                    },
+                    beuk::pipeline::VertexAttribute {
+                        shader_location: 1,
+                        format: vk::Format::R32G32B32A32_SFLOAT,
+                        offset: bytemuck::offset_of!(Vertex, color) as u32,
+                    },
+                ],
+            }],
+            color_attachment_formats: smallvec![swapchain.surface_format.format],
             depth_attachment_format: swapchain.depth_image_format,
             viewport: None,
             primitive: PrimitiveState {
