@@ -122,7 +122,7 @@ pub struct RenderContext {
     pub graphics_pipelines: Arc<ResourceManager<GraphicsPipeline>>,
     pub immutable_samplers: Arc<HashMap<SamplerDesc, vk::Sampler>>,
     pub shader_manager: Arc<ResourceManager<Shader>>,
-    pub shader_mapping: Arc<RwLock<HashMap<ShaderDescriptor, ResourceHandle<Shader>>>>,
+    pub shader_mapping: Arc<RwLock<HashMap<Arc<ShaderDescriptor>, ResourceHandle<Shader>>>>,
     pub graphics_pipeline_mapping:
         Arc<RwLock<HashMap<Arc<GraphicsPipelineDescriptor>, ResourceHandle<GraphicsPipeline>>>>,
 
@@ -1248,19 +1248,29 @@ impl RenderContext {
 
     /// If a shader with this descriptor already exists, it will be returned, otherwise a new one will be created.
     pub fn create_shader(&self, desc: ShaderDescriptor) -> ResourceHandle<Shader> {
+        log::debug!("Shader hash: {}", get_hash(&desc));
         if let Some(handle) = self.shader_mapping.read().unwrap().get(&desc) {
+            log::debug!("Shader already exists, returning existing handle.");
             return handle.clone();
         }
 
+        log::debug!("Creating shader");
+
+        let shader_desc = Arc::new(desc);
         let id = self.shader_manager.create(Shader::from_source_text(
             &self.device,
-            &desc.source,
-            &desc.label.unwrap_or("Unnamed".to_string()),
-            desc.kind,
-            &desc.entry_point,
-            &desc.defines,
+            &shader_desc.source,
+            &shader_desc.label.clone().unwrap_or("Unnamed".to_string()),
+            shader_desc.kind,
+            &shader_desc.entry_point,
+            &shader_desc.defines,
         ));
-        ResourceHandle::new(id, self.shader_manager.clone())
+        let handle = ResourceHandle::new(id, self.shader_manager.clone());
+        self.shader_mapping
+            .write()
+            .unwrap()
+            .insert(shader_desc, handle.clone());
+        handle
     }
 
     /// if a pipeline with this descriptor already exists, it will be returned, otherwise a new one will be created.
@@ -1268,9 +1278,13 @@ impl RenderContext {
         &self,
         desc: GraphicsPipelineDescriptor,
     ) -> ResourceHandle<GraphicsPipeline> {
+        log::debug!("Graphics pipeline hash: {}", get_hash(&desc));
         if let Some(handle) = self.graphics_pipeline_mapping.read().unwrap().get(&desc) {
+            log::debug!("Graphics pipeline already exists, returning existing handle.");
             return handle.clone();
         }
+
+        log::debug!("Creating graphics pipeline");
 
         let pipeline_desc = Arc::new(desc);
         let pipeline = GraphicsPipeline::new(
@@ -1461,4 +1475,11 @@ fn create_immutable_yuv_samplers(
     }
 
     result
+}
+
+fn get_hash<T: std::hash::Hash>(value: &T) -> u64 {
+    use std::hash::Hasher;
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    value.hash(&mut hasher);
+    hasher.finish()
 }

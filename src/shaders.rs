@@ -11,9 +11,7 @@ use ash::vk::{self, Filter, SamplerAddressMode, SamplerMipmapMode};
 use rspirv_reflect::BindingCount;
 use shaderc::CompilationArtifact;
 
-use crate::{
-    chunky_list::TempList, ctx::SamplerDesc, memory::ResourceHooks, pipeline::ShaderStages,
-};
+use crate::{chunky_list::TempList, ctx::SamplerDesc, memory::ResourceHooks};
 
 impl ResourceHooks for Shader {
     fn cleanup(
@@ -67,7 +65,7 @@ impl PartialEq for Shader {
     }
 }
 
-#[derive(Clone, Debug, Default, Hash, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, Hash, PartialEq, Eq)]
 pub enum ShaderKind {
     #[default]
     Vertex,
