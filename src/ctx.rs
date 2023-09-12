@@ -1044,6 +1044,16 @@ impl RenderContext {
                     })
                     .image_extent(texture.extent)],
             );
+
+            texture.transition(
+                &ctx.device,
+                command_buffer,
+                &TransitionDesc {
+                    new_layout: vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
+                    new_access_mask: vk::AccessFlags::SHADER_READ,
+                    new_stage_mask: vk::PipelineStageFlags::FRAGMENT_SHADER,
+                },
+            );
         });
     }
 

@@ -447,7 +447,7 @@ impl Shader {
             shaderc::TargetEnv::Vulkan,
             shaderc::EnvVersion::Vulkan1_2 as u32,
         );
-        options.set_optimization_level(shaderc::OptimizationLevel::Zero);
+        options.set_optimization_level(shaderc::OptimizationLevel::Performance);
         options.set_generate_debug_info();
         options.set_include_callback(|name, include_type, source_file, _depth| {
             let path = if include_type == shaderc::IncludeType::Relative {

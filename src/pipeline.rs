@@ -1,5 +1,4 @@
 use std::{
-    borrow::Cow,
     collections::HashMap,
     hash::{Hash, Hasher},
     sync::Arc,

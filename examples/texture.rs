@@ -1,7 +1,7 @@
 use beuk::ash::vk::{self, BufferUsageFlags};
 use beuk::buffer::MemoryLocation;
 use beuk::buffer::{Buffer, BufferDescriptor};
-use beuk::ctx::{RenderContextDescriptor, SamplerDesc};
+use beuk::ctx::RenderContextDescriptor;
 use beuk::memory::ResourceHandle;
 use beuk::pipeline::{
     BlendState, FragmentState, GraphicsPipeline, VertexBufferLayout, VertexState,
@@ -88,7 +88,7 @@ impl Canvas {
         let vertex_buffer = ctx.create_buffer_with_data(
             &BufferDescriptor {
                 debug_name: "vertices",
-                location: MemoryLocation::CpuToGpu,
+                location: MemoryLocation::GpuOnly,
                 size: (std::mem::size_of::<Vertex>() * 3) as u64,
                 usage: BufferUsageFlags::VERTEX_BUFFER,
             },
@@ -112,7 +112,7 @@ impl Canvas {
         let index_buffer = ctx.create_buffer_with_data(
             &BufferDescriptor {
                 debug_name: "indices",
-                location: MemoryLocation::CpuToGpu,
+                location: MemoryLocation::GpuOnly,
                 size: (std::mem::size_of::<u32>() * 3) as u64,
                 usage: BufferUsageFlags::INDEX_BUFFER,
             },
@@ -191,6 +191,8 @@ impl Canvas {
             false,
         );
 
+        // println!("texture handle: {:?}", image.width());
+
         let view = ctx.get_texture_view(&texture_handle).unwrap();
 
         unsafe {
@@ -199,21 +201,13 @@ impl Canvas {
                 &[vk::WriteDescriptorSet::default()
                     .dst_set(pipeline.descriptor_sets[0])
                     .dst_binding(0)
-                    .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+                    .descriptor_type(vk::DescriptorType::SAMPLED_IMAGE)
                     .image_info(std::slice::from_ref(
                         &vk::DescriptorImageInfo::default()
                             .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
                             .image_view(*view)
-                            .sampler(
-                                *ctx.immutable_samplers
-                                    .get(&SamplerDesc {
-                                        address_modes: vk::SamplerAddressMode::REPEAT,
-                                        mipmap_mode: vk::SamplerMipmapMode::LINEAR,
-                                        texel_filter: vk::Filter::LINEAR,
-                                    })
-                                    .unwrap(),
-                            ),
-                    ))],
+                    )),                    
+                    ],
                 &[],
             );
         }

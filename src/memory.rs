@@ -2,12 +2,11 @@ use std::{
     cell::UnsafeCell,
     fmt::{Debug, Formatter},
     hash::Hash,
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex}, collections::VecDeque
 };
 
 use anyhow::{anyhow, Result};
 use ash::vk::Extent2D;
-use crossbeam_queue::ArrayQueue;
 use gpu_allocator::vulkan::Allocator;
 
 use crate::ctx::RenderContext;
@@ -97,7 +96,7 @@ impl<T: Default + Debug + ResourceHooks> Drop for ResourceHandle<T> {
 
 pub struct ResourceManager<T> {
     resources: Arc<boxcar::Vec<ResourceInner<T>>>,
-    free_indices: ArrayQueue<Index>,
+    free_indices: Arc<Mutex<VecDeque<usize>>>,
     device: Arc<ash::Device>,
     allocator: Arc<Mutex<Allocator>>,
 }
@@ -117,10 +116,10 @@ impl<T: Default + Debug + ResourceHooks> ResourceManager<T> {
         allocator: Arc<Mutex<Allocator>>,
         capacity: usize,
     ) -> Self {
-        let queue = ArrayQueue::new(capacity);
+        let mut queue = VecDeque::with_capacity(capacity);
         let resources = Arc::new(boxcar::Vec::with_capacity(capacity));
         for i in 0..capacity {
-            queue.push(i).unwrap();
+            queue.push_back(i);
             resources.push(ResourceInner(UnsafeCell::new(Resource {
                 inner: Default::default(),
                 generation: 0,
@@ -130,7 +129,7 @@ impl<T: Default + Debug + ResourceHooks> ResourceManager<T> {
 
         Self {
             resources,
-            free_indices: queue,
+            free_indices: Arc::new(Mutex::new(queue)),
             device,
             allocator,
         }
@@ -170,12 +169,12 @@ impl<T: Default + Debug + ResourceHooks> ResourceManager<T> {
 
     #[tracing::instrument(skip_all, name = "create")]
     pub fn create(&self, resource: T) -> ResourceId {
-        let Some(index) = self.free_indices.pop() else {
-            panic!("No more free indices");
-        };
+        let index = self.get_index();
 
-        let old_generation = unsafe { &*self.resources[index].0.get() }.generation;
-        let new_generation = old_generation + 1;
+        log::debug!("Creating resource at index {}", index);
+        let old_resource = unsafe { &*self.resources[index].0.get() };    
+        assert_eq!(old_resource.retain_count, 0, "Resource at index {} retain count must be 0 when creating a new resource", index);
+        let new_generation = old_resource.generation + 1;
 
         unsafe {
             *self.resources[index].0.get() = Resource {
@@ -211,8 +210,37 @@ impl<T: Default + Debug + ResourceHooks> ResourceManager<T> {
         data.inner
             .cleanup(self.device.clone(), self.allocator.clone());
 
-        let _ = self.free_indices.force_push(handle.index);
+        let _ = self.free_indices.lock().unwrap().push_back(handle.index);
         Ok(())
+    }
+
+    pub fn get_index(&self) -> usize {
+        // Attempt to pop a free index.
+        let mut free_indices_guard = self.free_indices.lock().unwrap();
+        if let Some(index) = free_indices_guard.pop_front() {
+            index
+        } else {
+            let current_capacity = self.resources.count();
+            let new_capacity = current_capacity * 2; // Double the capacity. You can choose any other growth factor.
+            self.resources.reserve(current_capacity);
+            free_indices_guard.reserve(current_capacity);
+            
+            log::debug!("Growing resource manager capacity from {} to {}", current_capacity, new_capacity);
+
+            // Populate the resources and free_indices with the new capacity.
+            for i in current_capacity..new_capacity {
+                self.resources.push(ResourceInner(UnsafeCell::new(Resource {
+                    inner: Default::default(),
+                    generation: 0,
+                    retain_count: 0,
+                })));
+                free_indices_guard.push_back(i);
+            }
+
+            // Reserve the new capacity for the resources.
+            // At this point, we should be able to pop a new free index.
+            free_indices_guard.pop_front().expect("Failed to get a new free index after expanding capacity.")
+        }
     }
 
     pub fn clear_all(&self) {

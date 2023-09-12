@@ -10,7 +10,6 @@ anyhow = "1.0.72"
 ash = { git = "https://github.com/ash-rs/ash.git", features = ["linked"] }
 ash-window = { git = "https://github.com/ash-rs/ash.git" }
 boxcar = "0.2.2"
-crossbeam-queue = "0.3.8"
 gpu-allocator = { git = "https://github.com/dylanblokhuis/gpu-allocator.git", features = ["vulkan", "ash"], rev = "9f1e44b038e8f8bf9529b1fb9df0f182935da16b" }
 log = "0.4.19"
 raw-window-handle = "0.5.2"
@@ -28,3 +27,8 @@ tracing-subscriber = { version = "0.3" }
 tracing-tracy = { version = "0.10" }
 simple_logger = "4.2.0"
 crossbeam-channel = "0.5.8"
+
+[[test]]
+name = "beuk_tests"
+path = "beuk_tests/main.rs"
+harness = false
