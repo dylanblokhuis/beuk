@@ -63,6 +63,7 @@ fn test_capacity_growing() {
         move || {
             test_capacity_with_vulkan_buffers(ctx.clone());
             test_capacity(ctx.clone());
+            test_multithreaded(ctx.clone());
 
             // requests a close
             proxy.send_event(()).unwrap();
@@ -137,4 +138,94 @@ fn test_capacity(ctx: Arc<RenderContext>) {
         let resource = resource_manager.get(&handles[i]).unwrap();
         assert_eq!(resource.yo, i as u32, "Resource {} has wrong value", i);
     }
+}
+
+fn test_multithreaded(ctx: Arc<RenderContext>) {
+    let global_handles = Arc::new(Mutex::new(Vec::new()));
+
+    std::thread::spawn({
+        let ctx = ctx.clone();
+        let global_handles = global_handles.clone();
+        move || {
+            let mut handles = vec![];
+            for i in 0..2000 {
+                let handle = ctx.create_buffer_with_data(
+                    &BufferDescriptor {
+                        location: MemoryLocation::CpuToGpu,
+                        usage: BufferUsageFlags::UNIFORM_BUFFER,
+                        size: size_of::<Test>() as u64,
+                        ..Default::default()
+                    },
+                    bytemuck::cast_slice(&[Test {
+                        yo: i,
+                        _pad: [0; 12],
+                    }]),
+                    0,
+                );
+
+                handles.push(handle.clone());
+            }
+
+            // for i in 0..2000 {
+            //     let buffer = ctx.buffer_manager.get(&handles[i]).unwrap();
+            //     let resource: &Test = buffer.cast();
+            //     assert_eq!(resource.yo, i as u32, "Resource {} has wrong value", i);
+            //     println!("Resource {} has value {}", i, resource.yo);
+            // }
+
+            global_handles.lock().unwrap().extend(handles);
+        }
+    });
+
+    std::thread::spawn({
+        let ctx = ctx.clone();
+        let global_handles = global_handles.clone();
+
+        move || {
+            let mut handles = vec![];
+            for i in 0..2000 {
+                let handle = ctx.create_buffer_with_data(
+                    &BufferDescriptor {
+                        location: MemoryLocation::CpuToGpu,
+                        usage: BufferUsageFlags::UNIFORM_BUFFER,
+                        size: size_of::<Test>() as u64,
+                        ..Default::default()
+                    },
+                    bytemuck::cast_slice(&[Test {
+                        yo: i,
+                        _pad: [0; 12],
+                    }]),
+                    0,
+                );
+                handles.push(handle.clone());
+            }
+
+            // for i in 0..2000 {
+            //     let buffer = ctx.buffer_manager.get(&handles[i]).unwrap();
+            //     let resource: &Test = buffer.cast();
+            //     assert_eq!(resource.yo, i as u32, "Resource {} has wrong value", i);
+            //     println!("Resource {} has value {}", i, resource.yo);
+            // }
+
+            global_handles.lock().unwrap().extend(handles);
+        }
+    });
+
+    while global_handles.lock().unwrap().len() < 4000 {
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+
+    let handles = global_handles.lock().unwrap();
+    for handle in handles.iter() {
+        let buffer = ctx.buffer_manager.get(handle).unwrap();
+        let resource: &Test = buffer.cast();
+
+        println!("{:?}", resource);
+
+        // let buffer = ctx.buffer_manager.get(&handles[i]).unwrap();
+        // let resource: &Test = buffer.cast();
+        // assert_eq!(resource.yo, i as u32, "Resource {} has wrong value", i);
+        // println!("Resource {} has value {}", i, resource.yo);
+    }
+    // while
 }
