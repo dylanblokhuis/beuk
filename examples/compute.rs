@@ -173,6 +173,7 @@ impl Canvas {
             push_constant_range: None,
             blend: vec![BlendState::ALPHA_BLENDING],
             multisample: beuk::graphics_pipeline::MultisampleState::default(),
+            prepend_descriptor_sets: None,
         });
 
         let compute_handle = ctx.create_compute_pipeline(ComputePipelineDescriptor {
@@ -183,6 +184,7 @@ impl Canvas {
                 ..Default::default()
             }),
             push_constant_range: None,
+            prepend_descriptor_sets: None,
         });
 
         let attachment_format = swapchain.surface_format.format;

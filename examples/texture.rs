@@ -165,6 +165,7 @@ impl Canvas {
             push_constant_range: None,
             blend: vec![BlendState::ALPHA_BLENDING],
             multisample: beuk::graphics_pipeline::MultisampleState::default(),
+            prepend_descriptor_sets: None,
         });
 
         let wallpaper_bytes = include_bytes!("./texture/95.jpg");

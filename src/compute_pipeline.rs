@@ -2,10 +2,11 @@ use ::smallvec::smallvec;
 use ash::vk::{self, DescriptorType, WriteDescriptorSet};
 use rustc_hash::FxHashMap;
 use smallvec::SmallVec;
+use std::sync::Arc;
 
 use crate::{
     ctx::RenderContext,
-    graphics_pipeline::PushConstantRange,
+    graphics_pipeline::{PrependDescriptorSets, PushConstantRange},
     memory::{ResourceHandle, ResourceHooks},
     shaders::{ImmutableShaderInfo, Shader},
     smallvec,
@@ -15,6 +16,7 @@ use crate::{
 pub struct ComputePipelineDescriptor {
     pub shader: ResourceHandle<Shader>,
     pub push_constant_range: Option<PushConstantRange>,
+    pub prepend_descriptor_sets: Option<Arc<PrependDescriptorSets>>,
 }
 
 impl ResourceHooks for ComputePipeline {
@@ -55,6 +57,7 @@ pub struct ComputePipeline {
     pub descriptor_set_layouts: SmallVec<[vk::DescriptorSetLayout; 8]>,
     pub descriptor_pool: vk::DescriptorPool,
     pub set_layout_info: SmallVec<[FxHashMap<u32, DescriptorType>; 8]>,
+    pub prepended_descriptor_sets: Option<Arc<PrependDescriptorSets>>,
     queued_descriptor_writes: Vec<DescriptorWrite>,
 }
 
@@ -66,8 +69,27 @@ impl ComputePipeline {
             max_descriptor_count: ctx.max_descriptor_count,
         };
         let shader = ctx.shader_manager.get(&desc.shader).unwrap();
-        let (descriptor_set_layouts, set_layout_info) =
-            shader.create_descriptor_set_layouts(&ctx.device, immutable_shader_info);
+        let sets_prepended = if let Some(prepend_descriptor_sets) = &desc.prepend_descriptor_sets {
+            (0..prepend_descriptor_sets.sets.len() as u32).collect()
+        } else {
+            Vec::new()
+        };
+
+        let mut descriptor_set_layouts = desc
+            .prepend_descriptor_sets
+            .as_ref()
+            .map_or(SmallVec::new(), |sets| sets.layouts.clone());
+
+        let mut set_layout_info = desc
+            .prepend_descriptor_sets
+            .as_ref()
+            .map_or(SmallVec::new(), |sets| sets.set_layout_info.clone());
+
+        let (mut shader_descriptor_set_layouts, mut shader_set_layout_info) = shader
+            .create_descriptor_set_layouts(&ctx.device, immutable_shader_info, &sets_prepended);
+
+        descriptor_set_layouts.append(&mut shader_descriptor_set_layouts);
+        set_layout_info.append(&mut shader_set_layout_info);
 
         let push_constant_ranges: SmallVec<[vk::PushConstantRange; 1]> = desc
             .push_constant_range
@@ -105,6 +127,7 @@ impl ComputePipeline {
                 immutable_shader_info,
                 &descriptor_set_layouts,
                 &set_layout_info,
+                &sets_prepended,
             )
         } else {
             (vec![], vk::DescriptorPool::null())
@@ -117,6 +140,7 @@ impl ComputePipeline {
             descriptor_sets,
             descriptor_pool,
             descriptor_set_layouts,
+            prepended_descriptor_sets: desc.prepend_descriptor_sets,
             ..Default::default()
         }
     }

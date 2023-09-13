@@ -237,6 +237,7 @@ impl Pass {
             push_constant_range: None,
             blend: vec![BlendState::ALPHA_BLENDING],
             multisample: beuk::graphics_pipeline::MultisampleState::default(),
+            prepend_descriptor_sets: None,
         });
 
         Self {
@@ -382,6 +383,7 @@ impl PresentRenderPass {
             push_constant_range: None,
             blend: Default::default(),
             multisample: Default::default(),
+            prepend_descriptor_sets: None,
         });
 
         let vertex_buffer = ctx.create_buffer_with_data(

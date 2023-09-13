@@ -24,7 +24,6 @@ use std::{
     borrow::Cow,
     collections::HashMap,
     mem::size_of_val,
-    process::Command,
     sync::atomic::{AtomicBool, Ordering},
 };
 use std::{cell::RefCell, default::Default};

@@ -790,11 +790,20 @@ pub struct FragmentState {
 }
 
 /// will not reflect
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PrependDescriptorSets {
     pub sets: Vec<vk::DescriptorSet>,
     pub layouts: SmallVec<[vk::DescriptorSetLayout; 8]>,
     pub pool: vk::DescriptorPool,
+    pub set_layout_info: SmallVec<[FxHashMap<u32, DescriptorType>; 8]>,
+}
+
+impl Hash for PrependDescriptorSets {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.sets.hash(state);
+        self.layouts.hash(state);
+        self.pool.hash(state);
+    }
 }
 
 impl PrependDescriptorSets {
@@ -808,18 +817,20 @@ impl PrependDescriptorSets {
         };
 
         let (layouts, set_layout_info) =
-            shader.create_descriptor_set_layouts(&ctx.device, &immutable_shader_info);
+            shader.create_descriptor_set_layouts(&ctx.device, &immutable_shader_info, &[]);
         let (sets, pool) = shader.create_descriptor_sets(
             &ctx.device,
             &immutable_shader_info,
             &layouts,
             &set_layout_info,
+            &[],
         );
 
         Self {
             sets,
             layouts,
             pool,
+            set_layout_info,
         }
     }
 }
@@ -837,6 +848,7 @@ pub struct GraphicsPipelineDescriptor {
     /// Blend state for each color attachment
     pub blend: Vec<BlendState>,
     pub multisample: MultisampleState,
+    pub prepend_descriptor_sets: Option<Arc<PrependDescriptorSets>>,
 }
 
 #[derive(Debug, Default)]
@@ -851,6 +863,7 @@ pub struct GraphicsPipeline {
     pub depth_attachment: vk::Format,
     pub viewports: SmallVec<[vk::Viewport; 4]>,
     pub scissors: SmallVec<[vk::Rect2D; 4]>,
+    pub prepended_descriptor_sets: Option<Arc<PrependDescriptorSets>>,
     queued_descriptor_writes: Vec<DescriptorWrite>,
 }
 
@@ -959,8 +972,27 @@ impl GraphicsPipeline {
 
         let fragment_shader = shader_manager.get(&desc.fragment.shader).unwrap();
 
-        let (mut descriptor_set_layouts, set_layout_info) =
-            fragment_shader.create_descriptor_set_layouts(device, shader_info);
+        let sets_prepended = if let Some(prepend_descriptor_sets) = &desc.prepend_descriptor_sets {
+            (0..prepend_descriptor_sets.sets.len() as u32).collect()
+        } else {
+            Vec::new()
+        };
+
+        let mut descriptor_set_layouts = desc
+            .prepend_descriptor_sets
+            .as_ref()
+            .map_or(SmallVec::new(), |sets| sets.layouts.clone());
+
+        let mut set_layout_info = desc
+            .prepend_descriptor_sets
+            .as_ref()
+            .map_or(SmallVec::new(), |sets| sets.set_layout_info.clone());
+
+        let (mut shader_descriptor_set_layouts, mut shader_set_layout_info) =
+            fragment_shader.create_descriptor_set_layouts(device, shader_info, &sets_prepended);
+
+        descriptor_set_layouts.append(&mut shader_descriptor_set_layouts);
+        set_layout_info.append(&mut shader_set_layout_info);
 
         let push_constant_ranges: Vec<vk::PushConstantRange> = desc
             .push_constant_range
@@ -1113,28 +1145,11 @@ impl GraphicsPipeline {
                 shader_info,
                 &descriptor_set_layouts,
                 &set_layout_info,
+                &sets_prepended,
             )
         } else {
             (vec![], vk::DescriptorPool::null())
         };
-
-        // let mut descriptor_set_layouts = descriptor_set_layouts;
-        // let mut descriptor_sets = descriptor_sets;
-        // if let Some(prepend) = &desc.prepend_descriptor_sets {
-        //     descriptor_set_layouts = prepend
-        //         .layouts
-        //         .iter()
-        //         .chain(descriptor_set_layouts.iter())
-        //         .copied()
-        //         .collect();
-
-        //     descriptor_sets = prepend
-        //         .sets
-        //         .iter()
-        //         .chain(descriptor_sets.iter())
-        //         .copied()
-        //         .collect();
-        // }
 
         Self {
             pipeline,
@@ -1147,7 +1162,8 @@ impl GraphicsPipeline {
             viewports,
             scissors,
             descriptor_pool,
-            ..Default::default()
+            prepended_descriptor_sets: desc.prepend_descriptor_sets.clone(),
+            queued_descriptor_writes: vec![],
         }
     }
 
@@ -1182,11 +1198,29 @@ impl GraphicsPipeline {
                 ctx.device.update_descriptor_sets(&writes, &[]);
             }
 
+            let offset = if let Some(prepend_descriptor_sets) = &self.prepended_descriptor_sets {
+                ctx.device.cmd_bind_descriptor_sets(
+                    command_buffer,
+                    vk::PipelineBindPoint::GRAPHICS,
+                    self.layout,
+                    0,
+                    &prepend_descriptor_sets.sets,
+                    &[],
+                );
+                prepend_descriptor_sets.sets.len() as u32
+            } else {
+                0
+            };
+
+            if self.descriptor_sets.is_empty() {
+                return;
+            }
+
             ctx.device.cmd_bind_descriptor_sets(
                 command_buffer,
                 vk::PipelineBindPoint::GRAPHICS,
                 self.layout,
-                0,
+                offset,
                 &self.descriptor_sets,
                 &[],
             );

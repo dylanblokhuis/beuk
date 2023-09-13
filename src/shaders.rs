@@ -149,9 +149,13 @@ impl Shader {
         shader_info: &ImmutableShaderInfo,
         descriptor_set_layouts: &[vk::DescriptorSetLayout],
         set_layout_info: &[FxHashMap<u32, vk::DescriptorType>],
+        skip_sets: &[u32],
     ) -> (Vec<vk::DescriptorSet>, vk::DescriptorPool) {
         let mut descriptor_pool_sizes: Vec<vk::DescriptorPoolSize> = Vec::new();
-        for bindings in set_layout_info.iter() {
+        for (set, bindings) in set_layout_info.iter().enumerate() {
+            if skip_sets.contains(&(set as u32)) {
+                continue;
+            }
             for ty in bindings.values() {
                 if let Some(dps) = descriptor_pool_sizes.iter_mut().find(|item| item.ty == *ty) {
                     dps.descriptor_count += 1;
@@ -162,6 +166,10 @@ impl Shader {
                     })
                 }
             }
+        }
+
+        if descriptor_pool_sizes.is_empty() {
+            return (vec![], vk::DescriptorPool::null());
         }
 
         let descriptor_pool_info = vk::DescriptorPoolCreateInfo::default()
@@ -185,18 +193,11 @@ impl Shader {
         )
     }
 
-    // pub fn ext_shader_create_info(&self) -> ShaderCreateInfoEXT {
-    //     ShaderCreateInfoEXT::default()
-    //         .name(self.entry_point_cstr.as_c_str())
-    //         .code(&self.spirv)
-    //         .code_type(ShaderCodeTypeEXT::SPIRV)
-    //         .stage(self.kind.to_vk_shader_stage_flag())
-    // }
-
     pub fn create_descriptor_set_layouts(
         &self,
         device: &ash::Device,
         shader_info: &ImmutableShaderInfo,
+        skip_sets: &[u32],
     ) -> (
         SmallVec<[vk::DescriptorSetLayout; 8]>,
         SmallVec<[FxHashMap<u32, vk::DescriptorType>; 8]>,
@@ -209,10 +210,14 @@ impl Shader {
             .max()
             .unwrap_or(0u32);
 
-        let mut set_layouts = SmallVec::with_capacity(set_count as usize);
-        let mut set_layout_info = SmallVec::with_capacity(set_count as usize);
+        let mut set_layouts = SmallVec::new();
+        let mut set_layout_info = SmallVec::new();
 
         for set_index in 0..set_count {
+            if skip_sets.contains(&set_index) {
+                continue;
+            }
+
             let stage_flags = vk::ShaderStageFlags::ALL;
             let set = self.spirv_descripor_set_layouts.get(&set_index);
 
