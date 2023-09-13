@@ -214,6 +214,7 @@ impl Canvas {
                     .get_mut(&self.pipeline_handle)
                     .unwrap();
                 pipeline.bind_pipeline(ctx, command_buffer);
+                drop(pipeline);
 
                 ctx.device.cmd_bind_vertex_buffers(
                     command_buffer,

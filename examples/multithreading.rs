@@ -447,8 +447,8 @@ impl PresentRenderPass {
         pass_two: &ResourceHandle<Texture>,
     ) {
         let present_index = ctx.acquire_present_index();
-        let pipeline = ctx.graphics_pipelines.get(&self.pipeline_handle).unwrap();
         unsafe {
+            let pipeline = ctx.graphics_pipelines.get(&self.pipeline_handle).unwrap();
             ctx.device.update_descriptor_sets(
                 &[
                     vk::WriteDescriptorSet::default()
@@ -507,7 +507,7 @@ impl PresentRenderPass {
 
                 ctx.begin_rendering(command_buffer, color_attachments, None);
 
-                let pipeline = ctx
+                let mut pipeline = ctx
                     .graphics_pipelines
                     .get_mut(&self.pipeline_handle)
                     .unwrap();

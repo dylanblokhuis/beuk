@@ -248,7 +248,7 @@ impl Canvas {
 
             ctx.begin_rendering(command_buffer, color_attachments, None);
 
-            let pipeline = ctx
+            let mut pipeline = ctx
                 .graphics_pipelines
                 .get_mut(&self.pipeline_handle)
                 .unwrap();
@@ -276,7 +276,7 @@ impl Canvas {
             ctx.end_rendering(command_buffer);
 
             // flip colors with compute
-            let compute_pipeline = ctx.compute_pipelines.get_mut(&self.compute_handle).unwrap();
+            let mut compute_pipeline = ctx.compute_pipelines.get_mut(&self.compute_handle).unwrap();
             compute_pipeline.update_descriptor_image(
                 0,
                 0,
@@ -309,7 +309,8 @@ impl Canvas {
         ctx.present_record(present_index, |command_buffer, image_view, depth_view| {
             ctx.copy_texture_to_texture(
                 command_buffer,
-                ctx.texture_manager
+                &mut ctx
+                    .texture_manager
                     .get_mut(&self.attachment_handle)
                     .unwrap(),
                 &mut Texture::from_swapchain_image(

@@ -1,9 +1,9 @@
+use std::any::type_name;
 use std::{
-    cell::UnsafeCell,
     collections::VecDeque,
     fmt::{Debug, Formatter},
     hash::Hash,
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, MutexGuard},
 };
 
 use anyhow::{anyhow, Result};
@@ -15,14 +15,31 @@ use crate::ctx::RenderContext;
 pub type Generation = usize;
 pub type Index = usize;
 
-struct Resource<T> {
+#[derive(Debug)]
+pub struct Resource<T> {
     inner: T,
     generation: Generation,
     retain_count: usize,
 }
+unsafe impl<T> Send for Resource<T> {}
+unsafe impl<T> Sync for Resource<T> {}
+
+impl<T> std::ops::Deref for Resource<T> {
+    type Target = T;
+
+    fn deref(&self) -> &Self::Target {
+        &self.inner
+    }
+}
+
+impl<T> std::ops::DerefMut for Resource<T> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.inner
+    }
+}
 
 #[derive(Debug)]
-struct ResourceInner<T>(UnsafeCell<Resource<T>>);
+struct ResourceInner<T>(Mutex<Resource<T>>);
 unsafe impl<T> Send for ResourceInner<T> {}
 unsafe impl<T> Sync for ResourceInner<T> {}
 
@@ -77,7 +94,7 @@ pub struct ResourceId {
 
 impl<T: Default + Debug + ResourceHooks> Clone for ResourceHandle<T> {
     fn clone(&self) -> Self {
-        let resource = unsafe { &mut *self.manager.resources[self.id.index].0.get() };
+        let mut resource = self.manager.resources[self.id.index].0.lock().unwrap();
         if self.id.generation != resource.generation {
             panic!("Buffer generation mismatch, cannot clone");
         }
@@ -121,7 +138,7 @@ impl<T: Default + Debug + ResourceHooks> ResourceManager<T> {
         let resources = Arc::new(boxcar::Vec::with_capacity(capacity));
         for i in 0..capacity {
             queue.push_back(i);
-            resources.push(ResourceInner(UnsafeCell::new(Resource {
+            resources.push(ResourceInner(Mutex::new(Resource {
                 inner: Default::default(),
                 generation: 0,
                 retain_count: 0,
@@ -137,57 +154,58 @@ impl<T: Default + Debug + ResourceHooks> ResourceManager<T> {
     }
 
     #[tracing::instrument(skip(self, handle))]
-    pub fn get(&self, handle: &ResourceHandle<T>) -> Option<&T> {
+    pub fn get(&self, handle: &ResourceHandle<T>) -> Option<MutexGuard<Resource<T>>> {
         let ResourceId { index, generation } = handle.id();
         let resource = self.resources.get(index);
         let Some(lock) = resource else {
             return None;
         };
 
-        let data = unsafe { &*lock.0.get() };
+        let data = lock.0.lock().unwrap();
         if generation != data.generation {
             return None;
         }
 
-        Some(&data.inner)
+        Some(data)
     }
 
     #[tracing::instrument(skip(self, handle))]
-    pub fn get_mut(&self, handle: &ResourceHandle<T>) -> Option<&mut T> {
+    pub fn get_mut(&self, handle: &ResourceHandle<T>) -> Option<MutexGuard<Resource<T>>> {
         let ResourceId { index, generation } = handle.id();
         let resource = self.resources.get(index);
         let Some(lock) = resource else {
             return None;
         };
 
-        let data = unsafe { &mut *lock.0.get() };
+        let data = lock.0.lock().unwrap();
         if generation != data.generation {
             return None;
         }
 
-        Some(&mut data.inner)
+        Some(data)
     }
 
     #[tracing::instrument(skip_all, name = "create")]
     pub fn create(&self, resource: T) -> ResourceId {
         let index = self.get_index();
 
-        log::debug!("Creating resource at index {}", index);
-        let old_resource = unsafe { &*self.resources[index].0.get() };
-        assert_eq!(
-            old_resource.retain_count, 0,
-            "Resource at index {} retain count must be 0 when creating a new resource",
-            index
-        );
-        let new_generation = old_resource.generation + 1;
+        log::debug!("Creating {:?} at index {} ", type_name::<T>(), index,);
 
-        unsafe {
-            *self.resources[index].0.get() = Resource {
-                inner: resource,
-                generation: new_generation,
-                retain_count: 1,
-            }
-        }
+        let new_generation = {
+            let old_resource = self.resources[index].0.lock().unwrap();
+            assert_eq!(
+                old_resource.retain_count, 0,
+                "Resource at index {} retain count must be 0 when creating a new resource",
+                index
+            );
+            old_resource.generation + 1
+        };
+
+        *self.resources[index].0.lock().unwrap() = Resource {
+            inner: resource,
+            generation: new_generation,
+            retain_count: 1,
+        };
 
         ResourceId {
             index,
@@ -198,10 +216,10 @@ impl<T: Default + Debug + ResourceHooks> ResourceManager<T> {
     #[tracing::instrument(skip(self, handle))]
     pub fn destroy(&self, handle: ResourceId) -> Result<()> {
         let resource = self.resources.get(handle.index);
-        let Some(cell) = resource else {
+        let Some(lock) = resource else {
             return Err(anyhow!("No resource at index {:?}", handle.index));
         };
-        let data = unsafe { &mut *cell.0.get() };
+        let mut data = lock.0.lock().unwrap();
 
         if handle.generation != data.generation {
             // its OK to destroy a handle thats no longer valid, since it has already been destroyed.
@@ -238,7 +256,7 @@ impl<T: Default + Debug + ResourceHooks> ResourceManager<T> {
 
             // Populate the resources and free_indices with the new capacity.
             for i in current_capacity..new_capacity {
-                self.resources.push(ResourceInner(UnsafeCell::new(Resource {
+                self.resources.push(ResourceInner(Mutex::new(Resource {
                     inner: Default::default(),
                     generation: 0,
                     retain_count: 0,
@@ -256,7 +274,7 @@ impl<T: Default + Debug + ResourceHooks> ResourceManager<T> {
 
     pub fn clear_all(&self) {
         for (_, resource) in self.resources.iter() {
-            let data = unsafe { &mut *resource.0.get() };
+            let mut data = resource.0.lock().unwrap();
 
             // data.inner
             //     .cleanup(self.device.clone(), self.allocator.clone());
@@ -273,7 +291,7 @@ impl<T: Default + Debug + ResourceHooks> ResourceManager<T> {
         new_surface_resolution: Extent2D,
     ) {
         for (_, resource) in self.resources.iter() {
-            let data = unsafe { &mut *resource.0.get() };
+            let mut data = resource.0.lock().unwrap();
             data.inner
                 .on_swapchain_resize(ctx, old_surface_resolution, new_surface_resolution);
         }

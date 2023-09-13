@@ -1023,7 +1023,7 @@ impl RenderContext {
         texture: &ResourceHandle<Texture>,
         offset: u64,
     ) {
-        let texture = self.texture_manager.get_mut(texture).unwrap();
+        let mut texture = self.texture_manager.get_mut(texture).unwrap();
         texture.transition(
             &self.device,
             command_buffer,
@@ -1166,15 +1166,14 @@ impl RenderContext {
                 location: MemoryLocation::CpuToGpu,
                 debug_name: "Staging buffer",
             });
-            let staging_buffer = self.buffer_manager.get_mut(&staging_handle).unwrap();
+            let mut staging_buffer = self.buffer_manager.get_mut(&staging_handle).unwrap();
             staging_buffer.copy_from_slice(data, offset);
 
             self.record_submit(|command_buffer| unsafe {
-                let buffer = self.buffer_manager.get(&handle).unwrap();
                 self.device.cmd_copy_buffer(
                     command_buffer,
                     staging_buffer.buffer(),
-                    buffer.buffer(),
+                    self.buffer_manager.get(&handle).unwrap().buffer(),
                     &[vk::BufferCopy {
                         size: desc.size,
                         src_offset: 0,
@@ -1252,7 +1251,7 @@ impl RenderContext {
         &self,
         texture: &ResourceHandle<Texture>,
     ) -> Option<Arc<vk::ImageView>> {
-        let texture = self.texture_manager.get_mut(texture)?;
+        let mut texture = self.texture_manager.get_mut(texture)?;
         Some(texture.create_view(&self.device))
     }
 

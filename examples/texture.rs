@@ -248,7 +248,7 @@ impl Canvas {
 
                 ctx.begin_rendering(command_buffer, color_attachments, Some(depth_attachment));
 
-                let pipeline = ctx
+                let mut pipeline = ctx
                     .graphics_pipelines
                     .get_mut(&self.pipeline_handle)
                     .unwrap();
