@@ -1227,7 +1227,6 @@ impl RenderContext {
         );
         let id = self.texture_manager.create(texture);
         let texture_handle = ResourceHandle::new(id, self.texture_manager.clone());
-
         let buffer_handle = self.create_buffer_with_data(
             &BufferDescriptor {
                 debug_name: "texture staging buffer",
@@ -1241,6 +1240,16 @@ impl RenderContext {
 
         self.record_submit(|command_buffer| {
             self.copy_buffer_to_texture(command_buffer, &buffer_handle, &texture_handle, offset);
+            let mut texture = self.texture_manager.get_mut(&texture_handle).unwrap();
+            texture.transition(
+                &self.device,
+                command_buffer,
+                &TransitionDesc {
+                    new_layout: vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
+                    new_access_mask: vk::AccessFlags::SHADER_READ,
+                    new_stage_mask: vk::PipelineStageFlags::FRAGMENT_SHADER,
+                },
+            )
         });
 
         texture_handle

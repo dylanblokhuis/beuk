@@ -233,7 +233,8 @@ impl<T: Default + Debug + ResourceHooks> ResourceManager<T> {
         data.inner
             .cleanup(self.device.clone(), self.allocator.clone());
 
-        let _ = self.free_indices.lock().unwrap().push_back(handle.index);
+        // push to front to keep memory compact
+        let _ = self.free_indices.lock().unwrap().push_front(handle.index);
         Ok(())
     }
 
