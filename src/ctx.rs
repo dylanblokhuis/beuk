@@ -9,8 +9,8 @@ use ash::{
         khr::{DynamicRendering, Surface, Swapchain},
     },
     vk::{
-        CommandBuffer, DebugUtilsMessageSeverityFlagsEXT, DeviceSize, ExtDescriptorIndexingFn,
-        Fence, ImageView, KhrSamplerYcbcrConversionFn,
+        DebugUtilsMessageSeverityFlagsEXT, DeviceSize, ExtDescriptorIndexingFn,
+        ImageSubresourceLayers, ImageView, KhrSamplerYcbcrConversionFn,
         PhysicalDeviceBufferDeviceAddressFeaturesKHR, PhysicalDeviceDescriptorIndexingFeatures,
         PhysicalDeviceSamplerYcbcrConversionFeatures, PresentModeKHR, SurfaceKHR, API_VERSION_1_2,
     },
@@ -19,10 +19,12 @@ use ash::{vk, Entry};
 use ash::{Device, Instance};
 use gpu_allocator::vulkan::{Allocator, AllocatorCreateDesc};
 use rayon::ThreadPool;
+use rustc_hash::FxHashMap;
 use std::{
     borrow::Cow,
     collections::HashMap,
     mem::size_of_val,
+    process::Command,
     sync::atomic::{AtomicBool, Ordering},
 };
 use std::{cell::RefCell, default::Default};
@@ -32,8 +34,9 @@ use std::{os::raw::c_char, sync::Arc};
 
 use crate::{
     buffer::{Buffer, BufferDescriptor, MemoryLocation},
+    compute_pipeline::{ComputePipeline, ComputePipelineDescriptor},
+    graphics_pipeline::{Extent3d, GraphicsPipeline, GraphicsPipelineDescriptor},
     memory::{ResourceHandle, ResourceManager},
-    pipeline::{GraphicsPipeline, GraphicsPipelineDescriptor},
     shaders::{ImmutableShaderInfo, Shader, ShaderDescriptor},
     texture::{Texture, TransitionDesc},
 };
@@ -116,10 +119,18 @@ thread_local! {
     pub static COMMAND_POOL: RefCell<vk::CommandPool> = RefCell::new(vk::CommandPool::null());
 }
 
+#[derive(Clone)]
+pub struct CommandBuffer {
+    pub command_buffer: vk::CommandBuffer,
+    pub fence: vk::Fence,
+    device: Arc<Device>,
+}
+
 pub struct RenderContext {
     pub buffer_manager: Arc<ResourceManager<Buffer>>,
     pub texture_manager: Arc<ResourceManager<Texture>>,
     pub graphics_pipelines: Arc<ResourceManager<GraphicsPipeline>>,
+    pub compute_pipelines: Arc<ResourceManager<ComputePipeline>>,
     pub immutable_samplers: Arc<HashMap<SamplerDesc, vk::Sampler>>,
     pub shader_manager: Arc<ResourceManager<Shader>>,
     pub shader_mapping: Arc<RwLock<HashMap<Arc<ShaderDescriptor>, ResourceHandle<Shader>>>>,
@@ -129,14 +140,13 @@ pub struct RenderContext {
     pub yuv_immutable_samplers:
         Arc<HashMap<(vk::Format, SamplerDesc), (vk::SamplerYcbcrConversion, vk::Sampler)>>,
     pub allocator: Arc<Mutex<Allocator>>,
-    pub threaded_command_buffers:
-        Arc<RwLock<HashMap<usize, Arc<Mutex<(CommandBuffer, vk::Fence)>>>>>,
+    pub threaded_command_buffers: Arc<RwLock<FxHashMap<usize, Arc<Mutex<CommandBuffer>>>>>,
     pub render_swapchain: Arc<RwLock<RenderSwapchain>>,
     pub thread_id: std::thread::ThreadId,
 
     pub entry: Entry,
     pub instance: Instance,
-    pub device: Device,
+    pub device: Arc<Device>,
     pub dynamic_rendering: DynamicRendering,
     pub surface_loader: Surface,
     pub debug_utils_loader: DebugUtils,
@@ -150,7 +160,7 @@ pub struct RenderContext {
     pub surface: vk::SurfaceKHR,
 
     pub pool: vk::CommandPool,
-    pub main_command_buffer: Arc<Mutex<(vk::CommandBuffer, vk::Fence)>>,
+    pub main_command_buffer: Arc<Mutex<CommandBuffer>>,
 
     pub present_complete_semaphore: vk::Semaphore,
     pub rendering_complete_semaphore: vk::Semaphore,
@@ -329,7 +339,7 @@ impl RenderContext {
                 .push_next(&mut indexing_features)
                 .push_next(&mut yuv_features);
 
-            let device: Device = instance
+            let device = instance
                 .create_device(pdevice, &device_create_info, None)
                 .unwrap();
 
@@ -376,11 +386,6 @@ impl RenderContext {
                 .create_semaphore(&semaphore_create_info, None)
                 .unwrap();
 
-            let (command_thread_pool, threaded_command_buffers) =
-                Self::create_command_thread_pool(device.clone(), queue_family_index);
-
-            let command_thread_pool = Arc::new(command_thread_pool);
-
             let dynamic_rendering = DynamicRendering::new(&instance, &device);
 
             let allocator = Arc::new(Mutex::new(
@@ -395,13 +400,17 @@ impl RenderContext {
                 .unwrap(),
             ));
 
-            let arc_device = Arc::new(device.clone());
-            let buffer_manager = ResourceManager::new(arc_device.clone(), allocator.clone(), 512);
-            let texture_manager = ResourceManager::new(arc_device.clone(), allocator.clone(), 512);
-            let graphics_pipelines =
-                ResourceManager::new(arc_device.clone(), allocator.clone(), 64);
-            let shader_manager =
-                ResourceManager::new(arc_device.clone(), allocator.clone(), 64 * 2);
+            let device = Arc::new(device);
+
+            let (command_thread_pool, threaded_command_buffers) =
+                Self::create_command_thread_pool(device.clone(), queue_family_index);
+            let command_thread_pool = Arc::new(command_thread_pool);
+
+            let buffer_manager = ResourceManager::new(device.clone(), allocator.clone(), 512);
+            let texture_manager = ResourceManager::new(device.clone(), allocator.clone(), 512);
+            let graphics_pipelines = ResourceManager::new(device.clone(), allocator.clone(), 32);
+            let compute_pipelines = ResourceManager::new(device.clone(), allocator.clone(), 32);
+            let shader_manager = ResourceManager::new(device.clone(), allocator.clone(), 32 * 2);
 
             let present_queue = Arc::new(Mutex::new(present_queue));
             let thread_id = std::thread::current().id();
@@ -420,6 +429,7 @@ impl RenderContext {
                 buffer_manager: Arc::new(buffer_manager),
                 texture_manager: Arc::new(texture_manager),
                 graphics_pipelines: Arc::new(graphics_pipelines),
+                compute_pipelines: Arc::new(compute_pipelines),
                 shader_manager: Arc::new(shader_manager),
                 immutable_samplers: Arc::new(create_immutable_samplers(&device)),
                 yuv_immutable_samplers: Arc::new(create_immutable_yuv_samplers(&device)),
@@ -438,10 +448,11 @@ impl RenderContext {
                 present_queue,
 
                 pool,
-                main_command_buffer: Arc::new(Mutex::new((
-                    main_command_buffer,
-                    main_commands_reuse_fence,
-                ))),
+                main_command_buffer: Arc::new(Mutex::new(CommandBuffer {
+                    command_buffer: main_command_buffer,
+                    fence: main_commands_reuse_fence,
+                    device: device.clone(),
+                })),
 
                 present_complete_semaphore,
                 rendering_complete_semaphore,
@@ -639,7 +650,7 @@ impl RenderContext {
             let lock = lock.1.lock().unwrap();
             unsafe {
                 self.device
-                    .wait_for_fences(&[lock.1], true, u64::MAX)
+                    .wait_for_fences(&[lock.fence], true, u64::MAX)
                     .expect("Failed to wait for fences!");
             }
         }
@@ -683,20 +694,15 @@ impl RenderContext {
         self.is_resizing.store(false, Ordering::Relaxed);
     }
 
-    pub fn record(
-        &self,
-        command_buffer: vk::CommandBuffer,
-        fence: vk::Fence,
-        f: impl FnOnce(&Self, vk::CommandBuffer),
-    ) {
+    pub fn record(&self, command_buffer: &CommandBuffer, f: impl FnOnce(vk::CommandBuffer)) {
         unsafe {
             self.device
-                .reset_fences(&[fence])
+                .reset_fences(&[command_buffer.fence])
                 .expect("Reset fences failed.");
 
             self.device
                 .reset_command_buffer(
-                    command_buffer,
+                    command_buffer.command_buffer,
                     vk::CommandBufferResetFlags::RELEASE_RESOURCES,
                 )
                 .expect("Reset command buffer failed.");
@@ -705,17 +711,17 @@ impl RenderContext {
                 .flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT);
 
             self.device
-                .begin_command_buffer(command_buffer, &command_buffer_begin_info)
+                .begin_command_buffer(command_buffer.command_buffer, &command_buffer_begin_info)
                 .expect("Begin commandbuffer");
-            f(self, command_buffer);
+            f(command_buffer.command_buffer);
             self.device
-                .end_command_buffer(command_buffer)
+                .end_command_buffer(command_buffer.command_buffer)
                 .expect("End commandbuffer");
         }
     }
 
     /// this can only run on a thread created by the thread pool
-    pub fn get_command_buffer(&self) -> Arc<Mutex<(vk::CommandBuffer, Fence)>> {
+    pub fn get_command_buffer(&self) -> Arc<Mutex<CommandBuffer>> {
         while self.is_resizing.load(Ordering::Relaxed) {
             std::thread::yield_now();
         }
@@ -735,25 +741,25 @@ impl RenderContext {
     }
 
     /// Submits the command buffer to the queue and waits for it to finish.
-    pub fn submit(&self, command_buffer: vk::CommandBuffer, fence: vk::Fence) {
+    pub fn submit(&self, command_buffer: &CommandBuffer) {
         let queue = self.present_queue.lock().unwrap();
         unsafe {
-            let submit_info =
-                vk::SubmitInfo::default().command_buffers(std::slice::from_ref(&command_buffer));
+            let submit_info = vk::SubmitInfo::default()
+                .command_buffers(std::slice::from_ref(&command_buffer.command_buffer));
             self.device
-                .queue_submit(*queue, &[submit_info], fence)
+                .queue_submit(*queue, &[submit_info], command_buffer.fence)
                 .expect("queue submit failed.");
             self.device
-                .wait_for_fences(&[fence], true, std::u64::MAX)
+                .wait_for_fences(&[command_buffer.fence], true, std::u64::MAX)
                 .unwrap();
         }
     }
 
-    pub fn record_submit(&self, f: impl FnOnce(&Self, vk::CommandBuffer)) {
+    pub fn record_submit(&self, f: impl FnOnce(vk::CommandBuffer)) {
         let lock = self.get_command_buffer();
         let lock = lock.lock().unwrap();
-        self.record(lock.0, lock.1, f);
-        self.submit(lock.0, lock.1);
+        self.record(&lock, f);
+        self.submit(&lock);
     }
 
     /// Submits the command buffer to the present queue with corresponding semaphores and waits for it to finish.
@@ -764,15 +770,15 @@ impl RenderContext {
         let submit_info = vk::SubmitInfo::default()
             .wait_semaphores(std::slice::from_ref(&self.present_complete_semaphore))
             .wait_dst_stage_mask(&[vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT])
-            .command_buffers(std::slice::from_ref(&lock.0))
+            .command_buffers(std::slice::from_ref(&lock.command_buffer))
             .signal_semaphores(std::slice::from_ref(&self.rendering_complete_semaphore));
         unsafe {
             let queue = self.present_queue.lock().unwrap();
             self.device
-                .queue_submit(*queue, &[submit_info], lock.1)
+                .queue_submit(*queue, &[submit_info], lock.fence)
                 .expect("queue submit failed.");
             self.device
-                .wait_for_fences(&[lock.1], true, std::u64::MAX)
+                .wait_for_fences(&[lock.fence], true, std::u64::MAX)
                 .unwrap();
 
             let wait_semaphors = [self.rendering_complete_semaphore];
@@ -827,17 +833,15 @@ impl RenderContext {
 
     /// Acquires the next image, transitions the image from the swapchain and records the draw command buffer. Returns the present_index
     #[tracing::instrument(skip_all)]
-    pub fn present_record<
-        F: FnOnce(&Self, vk::CommandBuffer, ImageView, ImageView) + Send + Sync,
-    >(
+    pub fn present_record<F: FnOnce(vk::CommandBuffer, ImageView, ImageView) + Send + Sync>(
         &self,
         present_index: u32,
         f: F,
     ) {
         let lock = self.get_command_buffer();
         let lock = lock.lock().unwrap();
-        self.record(lock.0, lock.1, |ctx, command_buffer| unsafe {
-            let render_swapchain = ctx.get_swapchain();
+        self.record(&lock, |command_buffer| unsafe {
+            let render_swapchain = self.get_swapchain();
             let layout_transition_barriers = vk::ImageMemoryBarrier::default()
                 .image(render_swapchain.present_images[present_index as usize])
                 .src_access_mask(vk::AccessFlags::COLOR_ATTACHMENT_READ)
@@ -864,7 +868,7 @@ impl RenderContext {
             let present_image_view = render_swapchain.present_image_views[present_index as usize];
             let depth_image_view = render_swapchain.depth_image_view;
 
-            f(ctx, command_buffer, present_image_view, depth_image_view);
+            f(command_buffer, present_image_view, depth_image_view);
 
             let layout_transition_barriers = vk::ImageMemoryBarrier::default()
                 .image(render_swapchain.present_images[present_index as usize])
@@ -954,14 +958,14 @@ impl RenderContext {
     }
 
     pub fn create_command_thread_pool(
-        device: Device,
+        device: Arc<Device>,
         queue_family_index: u32,
     ) -> (
         ThreadPool,
-        Arc<RwLock<HashMap<usize, Arc<Mutex<(CommandBuffer, Fence)>>>>>,
+        Arc<RwLock<FxHashMap<usize, Arc<Mutex<CommandBuffer>>>>>,
     ) {
-        let m_command_buffers: Arc<RwLock<HashMap<usize, Arc<Mutex<(CommandBuffer, Fence)>>>>> =
-            Arc::new(RwLock::new(HashMap::new()));
+        let m_command_buffers: Arc<RwLock<FxHashMap<usize, Arc<Mutex<CommandBuffer>>>>> =
+            Default::default();
         let m_command_buffers_clone = m_command_buffers.clone();
 
         let pool = rayon::ThreadPoolBuilder::new()
@@ -996,10 +1000,14 @@ impl RenderContext {
                             .expect("Create fence failed.")
                     };
 
-                    m_command_buffers
-                        .write()
-                        .unwrap()
-                        .insert(x, Arc::new(Mutex::new((command_buffers[0], fence))));
+                    m_command_buffers.write().unwrap().insert(
+                        x,
+                        Arc::new(Mutex::new(CommandBuffer {
+                            command_buffer: command_buffers[0],
+                            fence,
+                            device: device.clone(),
+                        })),
+                    );
                 });
             })
             .build()
@@ -1011,25 +1019,26 @@ impl RenderContext {
     #[tracing::instrument(skip_all, name = "copy_buffer_to_texture")]
     pub fn copy_buffer_to_texture(
         &self,
+        command_buffer: vk::CommandBuffer,
         buffer: &ResourceHandle<Buffer>,
         texture: &ResourceHandle<Texture>,
         offset: u64,
     ) {
-        self.record_submit(|ctx, command_buffer| unsafe {
-            let texture = ctx.texture_manager.get_mut(texture).unwrap();
-            texture.transition(
-                &ctx.device,
-                command_buffer,
-                &TransitionDesc {
-                    new_layout: vk::ImageLayout::TRANSFER_DST_OPTIMAL,
-                    new_access_mask: vk::AccessFlags::TRANSFER_WRITE,
-                    new_stage_mask: vk::PipelineStageFlags::TRANSFER,
-                },
-            );
+        let texture = self.texture_manager.get_mut(texture).unwrap();
+        texture.transition(
+            &self.device,
+            command_buffer,
+            &TransitionDesc {
+                new_layout: vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+                new_access_mask: vk::AccessFlags::TRANSFER_WRITE,
+                new_stage_mask: vk::PipelineStageFlags::TRANSFER,
+            },
+        );
 
-            ctx.device.cmd_copy_buffer_to_image(
+        unsafe {
+            self.device.cmd_copy_buffer_to_image(
                 command_buffer,
-                ctx.buffer_manager.get(buffer).unwrap().buffer(),
+                self.buffer_manager.get(buffer).unwrap().buffer(),
                 texture.image,
                 texture.layout,
                 &[vk::BufferImageCopy::default()
@@ -1044,85 +1053,74 @@ impl RenderContext {
                     })
                     .image_extent(texture.extent)],
             );
+        }
 
-            texture.transition(
-                &ctx.device,
-                command_buffer,
-                &TransitionDesc {
-                    new_layout: vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
-                    new_access_mask: vk::AccessFlags::SHADER_READ,
-                    new_stage_mask: vk::PipelineStageFlags::FRAGMENT_SHADER,
-                },
-            );
-        });
+        texture.transition(
+            &self.device,
+            command_buffer,
+            &TransitionDesc {
+                new_layout: vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
+                new_access_mask: vk::AccessFlags::SHADER_READ,
+                new_stage_mask: vk::PipelineStageFlags::FRAGMENT_SHADER,
+            },
+        );
     }
 
-    // pub fn copy_buffer_to_texture(&self, buffer: &Buffer, texture: &Image) {
-    //     unsafe {
-    //         record_submit_commandbuffer(
-    //             &self.device,
-    //             self.setup_command_buffer,
-    //             self.setup_commands_reuse_fence,
-    //             self.present_queue,
-    //             &[],
-    //             &[],
-    //             &[],
-    //             |device, setup_command_buffer| {
-    //                 {
-    //                     let image_memory_barrier = vk::ImageMemoryBarrier2::default()
-    //                         .src_stage_mask(vk::PipelineStageFlags2::TRANSFER)
-    //                         .dst_stage_mask(vk::PipelineStageFlags2::TRANSFER)
-    //                         .src_access_mask(vk::AccessFlags2::empty())
-    //                         .dst_access_mask(vk::AccessFlags2::TRANSFER_WRITE)
-    //                         .old_layout(vk::ImageLayout::UNDEFINED)
-    //                         .new_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
-    //                         .image(texture.image)
-    //                         .subresource_range(vk::ImageSubresourceRange {
-    //                             aspect_mask: vk::ImageAspectFlags::COLOR,
-    //                             layer_count: 1,
-    //                             level_count: 1,
-    //                             ..Default::default()
-    //                         });
+    pub fn copy_texture_to_texture(
+        &self,
+        command_buffer: vk::CommandBuffer,
+        src_texture: &mut Texture,
+        dst_texture: &mut Texture,
+        region: Extent3d,
+    ) {
+        src_texture.transition(
+            &self.device,
+            command_buffer,
+            &TransitionDesc {
+                new_layout: vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
+                new_access_mask: vk::AccessFlags::TRANSFER_READ,
+                new_stage_mask: vk::PipelineStageFlags::TRANSFER,
+            },
+        );
 
-    //                     let dependency_info = vk::DependencyInfo::default()
-    //                         .image_memory_barriers(std::slice::from_ref(&image_memory_barrier));
+        dst_texture.transition(
+            &self.device,
+            command_buffer,
+            &TransitionDesc {
+                new_layout: vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+                new_access_mask: vk::AccessFlags::TRANSFER_WRITE,
+                new_stage_mask: vk::PipelineStageFlags::TRANSFER,
+            },
+        );
 
-    //                     self.synchronization2
-    //                         .cmd_pipeline_barrier2(setup_command_buffer, &dependency_info);
-    //                 }
-
-    //                 // println!(
-    //                 //     "{:?} {:?} {:?}",
-    //                 //     buffer.size,
-    //                 //     texture.extent.width * texture.bytes_per_texel(),
-    //                 //     texture.extent.width
-    //                 // );
-
-    //                 device.cmd_copy_buffer_to_image(
-    //                     setup_command_buffer,
-    //                     buffer.buffer,
-    //                     texture.image,
-    //                     ImageLayout::TRANSFER_DST_OPTIMAL,
-    //                     &[BufferImageCopy::default()
-    //                         .buffer_offset(0)
-    //                         .buffer_row_length(texture.extent.width)
-    //                         .buffer_image_height(0)
-    //                         .image_subresource(vk::ImageSubresourceLayers {
-    //                             aspect_mask: vk::ImageAspectFlags::COLOR,
-    //                             mip_level: 0,
-    //                             base_array_layer: 0,
-    //                             layer_count: 1,
-    //                         })
-    //                         .image_extent(texture.extent)],
-    //                 );
-
-    //                 // {
-
-    //                 // }
-    //             },
-    //         );
-    //     }
-    // }
+        let image_copy = vk::ImageCopy {
+            extent: region.into(),
+            src_offset: vk::Offset3D { x: 0, y: 0, z: 0 },
+            dst_offset: vk::Offset3D { x: 0, y: 0, z: 0 },
+            dst_subresource: ImageSubresourceLayers {
+                aspect_mask: vk::ImageAspectFlags::COLOR,
+                mip_level: 0,
+                base_array_layer: 0,
+                layer_count: 1,
+            },
+            src_subresource: ImageSubresourceLayers {
+                aspect_mask: vk::ImageAspectFlags::COLOR,
+                mip_level: 0,
+                base_array_layer: 0,
+                layer_count: 1,
+            },
+        };
+        unsafe {
+            self.device.cmd_copy_image(
+                command_buffer,
+                src_texture.image,
+                src_texture.layout,
+                dst_texture.image,
+                dst_texture.layout,
+                &[image_copy],
+            );
+        }
+    }
 
     /// Returns a read lock to the buffer manager.
     // pub fn get_buffer_manager(&self) -> std::sync::RwLockReadGuard<BufferManager> {
@@ -1172,9 +1170,9 @@ impl RenderContext {
             let staging_buffer = self.buffer_manager.get_mut(&staging_handle).unwrap();
             staging_buffer.copy_from_slice(data, offset);
 
-            self.record_submit(|ctx: &RenderContext, command_buffer| unsafe {
+            self.record_submit(|command_buffer| unsafe {
                 let buffer = self.buffer_manager.get(&handle).unwrap();
-                ctx.device.cmd_copy_buffer(
+                self.device.cmd_copy_buffer(
                     command_buffer,
                     staging_buffer.buffer(),
                     buffer.buffer(),
@@ -1242,7 +1240,10 @@ impl RenderContext {
             data,
             0,
         );
-        self.copy_buffer_to_texture(&buffer_handle, &texture_handle, offset);
+
+        self.record_submit(|command_buffer| {
+            self.copy_buffer_to_texture(command_buffer, &buffer_handle, &texture_handle, offset);
+        });
 
         texture_handle
     }
@@ -1274,6 +1275,7 @@ impl RenderContext {
             shader_desc.kind,
             &shader_desc.entry_point,
             &shader_desc.defines,
+            shader_desc.optimization.into(),
         ));
         let handle = ResourceHandle::new(id, self.shader_manager.clone());
         self.shader_mapping
@@ -1315,6 +1317,15 @@ impl RenderContext {
         handle
     }
 
+    pub fn create_compute_pipeline(
+        &self,
+        desc: ComputePipelineDescriptor,
+    ) -> ResourceHandle<ComputePipeline> {
+        let pipeline = ComputePipeline::new(self, desc);
+        let id = self.compute_pipelines.create(pipeline);
+        ResourceHandle::new(id, self.compute_pipelines.clone())
+    }
+
     /// Returns a read lock to the render swapchain.
     pub fn get_swapchain(&self) -> std::sync::RwLockReadGuard<RenderSwapchain> {
         self.render_swapchain.read().unwrap()
@@ -1331,7 +1342,7 @@ impl Drop for RenderContext {
             self.device
                 .destroy_semaphore(self.rendering_complete_semaphore, None);
             self.device
-                .destroy_fence(self.main_command_buffer.lock().unwrap().1, None);
+                .destroy_fence(self.main_command_buffer.lock().unwrap().fence, None);
 
             self.cleanup_swapchain();
 
@@ -1342,8 +1353,9 @@ impl Drop for RenderContext {
                     let command_buffer = command_buffer_g.get(&ctx.index());
                     if let Some(lock) = command_buffer {
                         let lock = lock.lock().unwrap();
-                        self.device.free_command_buffers(pool, &[lock.0]);
-                        self.device.destroy_fence(lock.1, None);
+                        self.device
+                            .free_command_buffers(pool, &[lock.command_buffer]);
+                        self.device.destroy_fence(lock.fence, None);
                     }
                     self.device.destroy_command_pool(pool, None);
                     command_buffer_g.remove(&ctx.index());

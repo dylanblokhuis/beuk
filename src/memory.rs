@@ -1,8 +1,9 @@
 use std::{
     cell::UnsafeCell,
+    collections::VecDeque,
     fmt::{Debug, Formatter},
     hash::Hash,
-    sync::{Arc, Mutex}, collections::VecDeque
+    sync::{Arc, Mutex},
 };
 
 use anyhow::{anyhow, Result};
@@ -172,8 +173,12 @@ impl<T: Default + Debug + ResourceHooks> ResourceManager<T> {
         let index = self.get_index();
 
         log::debug!("Creating resource at index {}", index);
-        let old_resource = unsafe { &*self.resources[index].0.get() };    
-        assert_eq!(old_resource.retain_count, 0, "Resource at index {} retain count must be 0 when creating a new resource", index);
+        let old_resource = unsafe { &*self.resources[index].0.get() };
+        assert_eq!(
+            old_resource.retain_count, 0,
+            "Resource at index {} retain count must be 0 when creating a new resource",
+            index
+        );
         let new_generation = old_resource.generation + 1;
 
         unsafe {
@@ -224,8 +229,12 @@ impl<T: Default + Debug + ResourceHooks> ResourceManager<T> {
             let new_capacity = current_capacity * 2; // Double the capacity. You can choose any other growth factor.
             self.resources.reserve(current_capacity);
             free_indices_guard.reserve(current_capacity);
-            
-            log::debug!("Growing resource manager capacity from {} to {}", current_capacity, new_capacity);
+
+            log::debug!(
+                "Growing resource manager capacity from {} to {}",
+                current_capacity,
+                new_capacity
+            );
 
             // Populate the resources and free_indices with the new capacity.
             for i in current_capacity..new_capacity {
@@ -239,7 +248,9 @@ impl<T: Default + Debug + ResourceHooks> ResourceManager<T> {
 
             // Reserve the new capacity for the resources.
             // At this point, we should be able to pop a new free index.
-            free_indices_guard.pop_front().expect("Failed to get a new free index after expanding capacity.")
+            free_indices_guard
+                .pop_front()
+                .expect("Failed to get a new free index after expanding capacity.")
         }
     }
 

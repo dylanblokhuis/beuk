@@ -1,5 +1,7 @@
+use ash::vk::Extent3D;
 use beuk::ash::vk::{self, BufferUsageFlags};
 use beuk::buffer::{Buffer, BufferDescriptor};
+use beuk::compute_pipeline::{ComputePipeline, ComputePipelineDescriptor};
 use beuk::ctx::RenderContextDescriptor;
 
 use beuk::graphics_pipeline::{
@@ -7,6 +9,7 @@ use beuk::graphics_pipeline::{
 };
 use beuk::memory::ResourceHandle;
 use beuk::shaders::ShaderDescriptor;
+use beuk::texture::Texture;
 use beuk::{
     ctx::RenderContext,
     graphics_pipeline::{GraphicsPipelineDescriptor, PrimitiveState},
@@ -72,8 +75,10 @@ fn main() {
 
 struct Canvas {
     pipeline_handle: ResourceHandle<GraphicsPipeline>,
+    compute_handle: ResourceHandle<ComputePipeline>,
     vertex_buffer: ResourceHandle<Buffer>,
     index_buffer: ResourceHandle<Buffer>,
+    attachment_handle: ResourceHandle<Texture>,
 }
 
 #[repr(C, align(16))]
@@ -156,7 +161,7 @@ impl Canvas {
                     ..Default::default()
                 }),
                 color_attachment_formats: smallvec![swapchain.surface_format.format],
-                depth_attachment_format: swapchain.depth_image_format,
+                depth_attachment_format: vk::Format::UNDEFINED,
             },
 
             viewport: None,
@@ -170,72 +175,152 @@ impl Canvas {
             multisample: beuk::graphics_pipeline::MultisampleState::default(),
         });
 
+        let compute_handle = ctx.create_compute_pipeline(ComputePipelineDescriptor {
+            shader: ctx.create_shader(ShaderDescriptor {
+                kind: beuk::shaders::ShaderKind::Compute,
+                entry_point: "main".into(),
+                source: include_str!("./triangle/shader.comp").into(),
+                ..Default::default()
+            }),
+            push_constant_range: None,
+        });
+
+        let attachment_format = swapchain.surface_format.format;
+        let attachment_handle = ctx.create_texture(
+            "media",
+            &vk::ImageCreateInfo {
+                image_type: vk::ImageType::TYPE_2D,
+                format: attachment_format,
+                extent: vk::Extent3D {
+                    width: swapchain.surface_resolution.width,
+                    height: swapchain.surface_resolution.height,
+                    depth: 1,
+                },
+                usage: vk::ImageUsageFlags::COLOR_ATTACHMENT
+                    | vk::ImageUsageFlags::TRANSFER_SRC
+                    | vk::ImageUsageFlags::SAMPLED
+                    | vk::ImageUsageFlags::STORAGE,
+                samples: vk::SampleCountFlags::TYPE_1,
+                mip_levels: 1,
+                array_layers: 1,
+                sharing_mode: vk::SharingMode::EXCLUSIVE,
+                ..Default::default()
+            },
+            true,
+        );
+
         Self {
             pipeline_handle,
+            compute_handle,
             vertex_buffer,
             index_buffer,
+            attachment_handle,
         }
     }
 
     pub fn draw(&self, ctx: &RenderContext) {
+        ctx.record_submit(|command_buffer| unsafe {
+            let attachment_view = ctx.get_texture_view(&self.attachment_handle).unwrap();
+            let color_attachments = &[vk::RenderingAttachmentInfo::default()
+                .image_view(*attachment_view)
+                .image_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
+                .load_op(vk::AttachmentLoadOp::CLEAR)
+                .store_op(vk::AttachmentStoreOp::STORE)
+                .clear_value(vk::ClearValue {
+                    color: vk::ClearColorValue {
+                        float32: [0.1, 0.1, 0.1, 1.0],
+                    },
+                })];
+
+            // let depth_attachment = &vk::RenderingAttachmentInfo::default()
+            //     .image_view(depth_view)
+            //     .image_layout(vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL)
+            //     .load_op(vk::AttachmentLoadOp::CLEAR)
+            //     .store_op(vk::AttachmentStoreOp::STORE)
+            //     .clear_value(vk::ClearValue {
+            //         depth_stencil: vk::ClearDepthStencilValue {
+            //             depth: 1.0,
+            //             stencil: 0,
+            //         },
+            //     });
+
+            ctx.begin_rendering(command_buffer, color_attachments, None);
+
+            let pipeline = ctx
+                .graphics_pipelines
+                .get_mut(&self.pipeline_handle)
+                .unwrap();
+            pipeline.bind_pipeline(ctx, command_buffer);
+            pipeline.bind_descriptor_sets(ctx, command_buffer);
+
+            ctx.device.cmd_bind_vertex_buffers(
+                command_buffer,
+                0,
+                std::slice::from_ref(
+                    &ctx.buffer_manager
+                        .get(&self.vertex_buffer)
+                        .unwrap()
+                        .buffer(),
+                ),
+                &[0],
+            );
+            ctx.device.cmd_bind_index_buffer(
+                command_buffer,
+                ctx.buffer_manager.get(&self.index_buffer).unwrap().buffer(),
+                0,
+                vk::IndexType::UINT16,
+            );
+            ctx.device.cmd_draw_indexed(command_buffer, 3, 1, 0, 0, 1);
+            ctx.end_rendering(command_buffer);
+
+            // flip colors with compute
+            let compute_pipeline = ctx.compute_pipelines.get_mut(&self.compute_handle).unwrap();
+            compute_pipeline.update_descriptor_image(
+                0,
+                0,
+                0,
+                vk::DescriptorImageInfo::default()
+                    .image_view(*attachment_view)
+                    .image_layout(vk::ImageLayout::GENERAL),
+            );
+            compute_pipeline.update_descriptor_image(
+                0,
+                1,
+                0,
+                vk::DescriptorImageInfo::default()
+                    .image_view(*attachment_view)
+                    .image_layout(vk::ImageLayout::GENERAL),
+            );
+            compute_pipeline.bind_descriptor_sets(ctx, command_buffer);
+            compute_pipeline.bind_pipeline(ctx, command_buffer);
+            let texture = ctx.texture_manager.get(&self.attachment_handle).unwrap();
+            ctx.device.cmd_dispatch(
+                command_buffer,
+                texture.extent.width / 16,
+                texture.extent.height / 16,
+                1,
+            );
+        });
+
         let present_index = ctx.acquire_present_index();
 
-        ctx.present_record(
-            present_index,
-            |command_buffer, color_view, depth_view| unsafe {
-                let color_attachments = &[vk::RenderingAttachmentInfo::default()
-                    .image_view(color_view)
-                    .image_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
-                    .load_op(vk::AttachmentLoadOp::CLEAR)
-                    .store_op(vk::AttachmentStoreOp::STORE)
-                    .clear_value(vk::ClearValue {
-                        color: vk::ClearColorValue {
-                            float32: [0.1, 0.1, 0.1, 1.0],
-                        },
-                    })];
-
-                let depth_attachment = &vk::RenderingAttachmentInfo::default()
-                    .image_view(depth_view)
-                    .image_layout(vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL)
-                    .load_op(vk::AttachmentLoadOp::CLEAR)
-                    .store_op(vk::AttachmentStoreOp::STORE)
-                    .clear_value(vk::ClearValue {
-                        depth_stencil: vk::ClearDepthStencilValue {
-                            depth: 1.0,
-                            stencil: 0,
-                        },
-                    });
-
-                ctx.begin_rendering(command_buffer, color_attachments, Some(depth_attachment));
-
-                let pipeline = ctx
-                    .graphics_pipelines
-                    .get_mut(&self.pipeline_handle)
-                    .unwrap();
-                pipeline.bind_pipeline(ctx, command_buffer);
-
-                ctx.device.cmd_bind_vertex_buffers(
-                    command_buffer,
-                    0,
-                    std::slice::from_ref(
-                        &ctx.buffer_manager
-                            .get(&self.vertex_buffer)
-                            .unwrap()
-                            .buffer(),
-                    ),
-                    &[0],
-                );
-                ctx.device.cmd_bind_index_buffer(
-                    command_buffer,
-                    ctx.buffer_manager.get(&self.index_buffer).unwrap().buffer(),
-                    0,
-                    vk::IndexType::UINT16,
-                );
-                ctx.device.cmd_draw_indexed(command_buffer, 3, 1, 0, 0, 1);
-
-                ctx.end_rendering(command_buffer);
-            },
-        );
+        ctx.present_record(present_index, |command_buffer, image_view, depth_view| {
+            ctx.copy_texture_to_texture(
+                command_buffer,
+                ctx.texture_manager
+                    .get_mut(&self.attachment_handle)
+                    .unwrap(),
+                &mut Texture::from_swapchain_image(
+                    ctx.get_swapchain().present_images[present_index as usize],
+                ),
+                Extent3D {
+                    width: ctx.get_swapchain().surface_resolution.width,
+                    height: ctx.get_swapchain().surface_resolution.height,
+                    depth: 1,
+                }
+                .into(),
+            );
+        });
 
         ctx.present_submit(present_index);
     }

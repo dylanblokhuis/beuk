@@ -2,13 +2,16 @@ use beuk::ash::vk::{self, BufferUsageFlags};
 use beuk::buffer::{Buffer, BufferDescriptor, MemoryLocation};
 use beuk::ctx::{RenderContextDescriptor, SamplerDesc};
 
+use beuk::graphics_pipeline::{
+    BlendState, FragmentState, GraphicsPipeline, PrependDescriptorSets, VertexBufferLayout,
+    VertexState,
+};
 use beuk::memory::ResourceHandle;
-use beuk::pipeline::{BlendState, GraphicsPipeline, VertexBufferLayout, VertexState, FragmentState};
 use beuk::shaders::ShaderDescriptor;
 use beuk::texture::Texture;
 use beuk::{
     ctx::RenderContext,
-    pipeline::{GraphicsPipelineDescriptor, PrimitiveState},
+    graphics_pipeline::{GraphicsPipelineDescriptor, PrimitiveState},
 };
 use raw_window_handle::{HasRawDisplayHandle, HasRawWindowHandle};
 use smallvec::smallvec;
@@ -198,16 +201,16 @@ impl Pass {
                     source: include_str!("./triangle/shader.vert").into(),
                     ..Default::default()
                 }),
-                buffers:smallvec![VertexBufferLayout {
+                buffers: smallvec![VertexBufferLayout {
                     array_stride: std::mem::size_of::<Vertex>() as u32,
-                    step_mode: beuk::pipeline::VertexStepMode::Vertex,
+                    step_mode: beuk::graphics_pipeline::VertexStepMode::Vertex,
                     attributes: smallvec![
-                        beuk::pipeline::VertexAttribute {
+                        beuk::graphics_pipeline::VertexAttribute {
                             shader_location: 0,
                             format: vk::Format::R32G32B32A32_SFLOAT,
                             offset: bytemuck::offset_of!(Vertex, pos) as u32,
                         },
-                        beuk::pipeline::VertexAttribute {
+                        beuk::graphics_pipeline::VertexAttribute {
                             shader_location: 1,
                             format: vk::Format::R32G32B32A32_SFLOAT,
                             offset: bytemuck::offset_of!(Vertex, color) as u32,
@@ -233,7 +236,7 @@ impl Pass {
             depth_stencil: Default::default(),
             push_constant_range: None,
             blend: vec![BlendState::ALPHA_BLENDING],
-            multisample: beuk::pipeline::MultisampleState::default(),
+            multisample: beuk::graphics_pipeline::MultisampleState::default(),
         });
 
         Self {
@@ -245,7 +248,7 @@ impl Pass {
     }
 
     pub fn draw(&self, ctx: &RenderContext) {
-        ctx.record_submit(|ctx, command_buffer| unsafe {
+        ctx.record_submit(|command_buffer| unsafe {
             let color_attachments = &[vk::RenderingAttachmentInfo::default()
                 .image_view(*ctx.get_texture_view(&self.attachment).unwrap())
                 .image_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
@@ -259,10 +262,11 @@ impl Pass {
 
             ctx.begin_rendering(command_buffer, color_attachments, None);
 
-            ctx.graphics_pipelines
-                .get(&self.pipeline_handle)
-                .unwrap()
-                .bind(&ctx.device, command_buffer);
+            let pipeline = ctx
+                .graphics_pipelines
+                .get_mut(&self.pipeline_handle)
+                .unwrap();
+            pipeline.bind_pipeline(ctx, command_buffer);
             ctx.device.cmd_bind_vertex_buffers(
                 command_buffer,
                 0,
@@ -296,8 +300,7 @@ struct PresentVertex {
 
 impl PresentRenderPass {
     pub fn new(ctx: &RenderContext) -> Self {
-        let vertex_shader = 
-            r#"
+        let vertex_shader = r#"
             #version 450
             #extension GL_ARB_separate_shader_objects : enable
             #extension GL_ARB_shading_language_420pack : enable
@@ -312,7 +315,6 @@ impl PresentRenderPass {
                 gl_Position = vec4(pos, 0.0, 1.0);
             }
             "#;
-            
 
         let fragment_shader = r#"
             #version 450
@@ -346,14 +348,14 @@ impl PresentRenderPass {
                 }),
                 buffers: smallvec![VertexBufferLayout {
                     array_stride: std::mem::size_of::<PresentVertex>() as u32,
-                    step_mode: beuk::pipeline::VertexStepMode::Vertex,
+                    step_mode: beuk::graphics_pipeline::VertexStepMode::Vertex,
                     attributes: smallvec![
-                        beuk::pipeline::VertexAttribute {
+                        beuk::graphics_pipeline::VertexAttribute {
                             shader_location: 0,
                             format: vk::Format::R32G32_SFLOAT,
                             offset: bytemuck::offset_of!(PresentVertex, pos) as u32,
                         },
-                        beuk::pipeline::VertexAttribute {
+                        beuk::graphics_pipeline::VertexAttribute {
                             shader_location: 1,
                             format: vk::Format::R32G32_SFLOAT,
                             offset: bytemuck::offset_of!(PresentVertex, uv) as u32,
@@ -489,7 +491,7 @@ impl PresentRenderPass {
         };
         ctx.present_record(
             present_index,
-            |ctx, command_buffer, color_view, _depth_view| unsafe {
+            |command_buffer, color_view, _depth_view| unsafe {
                 let color_attachments = &[vk::RenderingAttachmentInfo::default()
                     .image_view(color_view)
                     .image_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
@@ -503,7 +505,12 @@ impl PresentRenderPass {
 
                 ctx.begin_rendering(command_buffer, color_attachments, None);
 
-                pipeline.bind(&ctx.device, command_buffer);
+                let pipeline = ctx
+                    .graphics_pipelines
+                    .get_mut(&self.pipeline_handle)
+                    .unwrap();
+                pipeline.bind_pipeline(ctx, command_buffer);
+                pipeline.bind_descriptor_sets(ctx, command_buffer);
                 ctx.device.cmd_bind_vertex_buffers(
                     command_buffer,
                     0,

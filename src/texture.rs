@@ -5,7 +5,10 @@ use gpu_allocator::{
 };
 use std::sync::Arc;
 
-use crate::{ctx::RenderContext, memory::ResourceHooks};
+use crate::{
+    ctx::{CommandBuffer, RenderContext},
+    memory::ResourceHooks,
+};
 
 #[derive(Debug, Default)]
 pub struct Texture {
@@ -27,6 +30,12 @@ pub struct Texture {
     pub access_mask: vk::AccessFlags,
     pub stage_mask: vk::PipelineStageFlags,
     pub name: String,
+}
+
+impl From<Texture> for vk::Image {
+    fn from(texture: Texture) -> Self {
+        texture.image
+    }
 }
 
 impl ResourceHooks for Texture {
@@ -224,6 +233,22 @@ impl Texture {
         self.access_mask = desc.new_access_mask;
         self.layout = desc.new_layout;
         self.stage_mask = desc.new_stage_mask;
+    }
+
+    pub fn from_swapchain_image(image: vk::Image) -> Texture {
+        Self {
+            image,
+            layout: vk::ImageLayout::UNDEFINED,
+            access_mask: vk::AccessFlags::empty(),
+            subresource_range: vk::ImageSubresourceRange::default()
+                .aspect_mask(vk::ImageAspectFlags::COLOR)
+                .base_mip_level(0)
+                .level_count(1)
+                .base_array_layer(0)
+                .layer_count(1),
+            stage_mask: vk::PipelineStageFlags::TOP_OF_PIPE,
+            ..Default::default()
+        }
     }
 
     // pub fn from_image_buffer(

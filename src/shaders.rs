@@ -9,7 +9,9 @@ use std::{
 
 use ash::vk::{self, Filter, SamplerAddressMode, SamplerMipmapMode};
 use rspirv_reflect::BindingCount;
-use shaderc::CompilationArtifact;
+use rustc_hash::FxHashMap;
+use shaderc::{CompilationArtifact, OptimizationLevel};
+use smallvec::SmallVec;
 
 use crate::{chunky_list::TempList, ctx::SamplerDesc, memory::ResourceHooks};
 
@@ -33,6 +35,24 @@ impl ResourceHooks for Shader {
     }
 }
 
+#[derive(Clone, Copy, Debug, Default, Hash, PartialEq, Eq)]
+pub enum ShaderOptimization {
+    None,
+    Size,
+    #[default]
+    Performance,
+}
+
+impl From<ShaderOptimization> for OptimizationLevel {
+    fn from(opt: ShaderOptimization) -> Self {
+        match opt {
+            ShaderOptimization::None => OptimizationLevel::Zero,
+            ShaderOptimization::Size => OptimizationLevel::Size,
+            ShaderOptimization::Performance => OptimizationLevel::Performance,
+        }
+    }
+}
+
 #[derive(Clone, Debug, Default, Hash, PartialEq, Eq)]
 pub struct ShaderDescriptor {
     pub label: Option<String>,
@@ -40,6 +60,7 @@ pub struct ShaderDescriptor {
     pub kind: ShaderKind,
     pub defines: Vec<(String, Option<String>)>,
     pub entry_point: Cow<'static, str>,
+    pub optimization: ShaderOptimization,
 }
 
 #[derive(Clone, Debug, Default, Eq)]
@@ -127,7 +148,7 @@ impl Shader {
         device: &ash::Device,
         shader_info: &ImmutableShaderInfo,
         descriptor_set_layouts: &[vk::DescriptorSetLayout],
-        set_layout_info: &[HashMap<u32, vk::DescriptorType>],
+        set_layout_info: &[FxHashMap<u32, vk::DescriptorType>],
     ) -> (Vec<vk::DescriptorSet>, vk::DescriptorPool) {
         let mut descriptor_pool_sizes: Vec<vk::DescriptorPoolSize> = Vec::new();
         for bindings in set_layout_info.iter() {
@@ -177,8 +198,8 @@ impl Shader {
         device: &ash::Device,
         shader_info: &ImmutableShaderInfo,
     ) -> (
-        Vec<vk::DescriptorSetLayout>,
-        Vec<HashMap<u32, vk::DescriptorType>>,
+        SmallVec<[vk::DescriptorSetLayout; 8]>,
+        SmallVec<[FxHashMap<u32, vk::DescriptorType>; 8]>,
     ) {
         let samplers = TempList::new();
         let set_count = self
@@ -188,9 +209,8 @@ impl Shader {
             .max()
             .unwrap_or(0u32);
 
-        let mut set_layouts: Vec<vk::DescriptorSetLayout> = Vec::with_capacity(set_count as usize);
-        let mut set_layout_info: Vec<HashMap<u32, vk::DescriptorType>> =
-            Vec::with_capacity(set_count as usize);
+        let mut set_layouts = SmallVec::with_capacity(set_count as usize);
+        let mut set_layout_info = SmallVec::with_capacity(set_count as usize);
 
         for set_index in 0..set_count {
             let stage_flags = vk::ShaderStageFlags::ALL;
@@ -427,6 +447,7 @@ impl Shader {
         kind: ShaderKind,
         entry_point: &str,
         defines: &[(String, Option<String>)],
+        optimization: OptimizationLevel,
     ) -> Self {
         let compiler = shaderc::Compiler::new().unwrap();
         let mut options = shaderc::CompileOptions::new().unwrap();
@@ -447,7 +468,7 @@ impl Shader {
             shaderc::TargetEnv::Vulkan,
             shaderc::EnvVersion::Vulkan1_2 as u32,
         );
-        options.set_optimization_level(shaderc::OptimizationLevel::Performance);
+        options.set_optimization_level(optimization);
         options.set_generate_debug_info();
         options.set_include_callback(|name, include_type, source_file, _depth| {
             let path = if include_type == shaderc::IncludeType::Relative {
@@ -487,6 +508,7 @@ impl Shader {
         kind: ShaderKind,
         entry_point: &str,
         defines: &[(String, Option<String>)],
+        optimization: OptimizationLevel,
     ) -> Self {
         Self::from_source_text(
             device,
@@ -495,6 +517,7 @@ impl Shader {
             kind,
             entry_point,
             defines,
+            optimization,
         )
     }
 }

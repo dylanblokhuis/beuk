@@ -1,16 +1,20 @@
 use std::{
-    collections::HashMap,
     hash::{Hash, Hasher},
     sync::Arc,
 };
 
 use ash::{
-    vk::{self, CullModeFlags, DescriptorType, FrontFace, PolygonMode, PrimitiveTopology},
+    vk::{
+        self, CullModeFlags, DescriptorType, FrontFace, PolygonMode, PrimitiveTopology,
+        WriteDescriptorSet,
+    },
     Device,
 };
-use smallvec::SmallVec;
+use rustc_hash::FxHashMap;
+use smallvec::{smallvec, SmallVec, ToSmallVec};
 
 use crate::{
+    compute_pipeline::{DescriptorWrite, DescriptorWriteType},
     ctx::RenderContext,
     memory::{ResourceHandle, ResourceHooks, ResourceManager},
     shaders::ImmutableShaderInfo,
@@ -785,6 +789,41 @@ pub struct FragmentState {
     pub depth_attachment_format: vk::Format,
 }
 
+/// will not reflect
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct PrependDescriptorSets {
+    pub sets: Vec<vk::DescriptorSet>,
+    pub layouts: SmallVec<[vk::DescriptorSetLayout; 8]>,
+    pub pool: vk::DescriptorPool,
+}
+
+impl PrependDescriptorSets {
+    pub fn new(ctx: &RenderContext, globals_shader: &ResourceHandle<Shader>) -> Self {
+        let shader = ctx.shader_manager.get(globals_shader).unwrap();
+
+        let immutable_shader_info = ImmutableShaderInfo {
+            immutable_samplers: ctx.immutable_samplers.clone(),
+            yuv_conversion_samplers: ctx.yuv_immutable_samplers.clone(),
+            max_descriptor_count: ctx.max_descriptor_count,
+        };
+
+        let (layouts, set_layout_info) =
+            shader.create_descriptor_set_layouts(&ctx.device, &immutable_shader_info);
+        let (sets, pool) = shader.create_descriptor_sets(
+            &ctx.device,
+            &immutable_shader_info,
+            &layouts,
+            &set_layout_info,
+        );
+
+        Self {
+            sets,
+            layouts,
+            pool,
+        }
+    }
+}
+
 #[derive(Clone, Debug, Hash, PartialEq, Eq)]
 pub struct GraphicsPipelineDescriptor {
     pub vertex: VertexState,
@@ -805,13 +844,14 @@ pub struct GraphicsPipeline {
     pub pipeline: vk::Pipeline,
     pub layout: vk::PipelineLayout,
     pub descriptor_sets: Vec<vk::DescriptorSet>,
-    pub descriptor_set_layouts: Vec<vk::DescriptorSetLayout>,
+    pub descriptor_set_layouts: SmallVec<[vk::DescriptorSetLayout; 8]>,
     pub descriptor_pool: vk::DescriptorPool,
-    pub set_layout_info: Vec<HashMap<u32, DescriptorType>>,
-    pub color_attachments: Vec<vk::Format>,
+    pub set_layout_info: SmallVec<[FxHashMap<u32, DescriptorType>; 8]>,
+    pub color_attachments: SmallVec<[vk::Format; 8]>,
     pub depth_attachment: vk::Format,
-    pub viewports: Vec<vk::Viewport>,
-    pub scissors: Vec<vk::Rect2D>,
+    pub viewports: SmallVec<[vk::Viewport; 4]>,
+    pub scissors: SmallVec<[vk::Rect2D; 4]>,
+    queued_descriptor_writes: Vec<DescriptorWrite>,
 }
 
 impl ResourceHooks for GraphicsPipeline {
@@ -918,7 +958,8 @@ impl GraphicsPipeline {
             vk::PipelineDynamicStateCreateInfo::default().dynamic_states(&dynamic_state);
 
         let fragment_shader = shader_manager.get(&desc.fragment.shader).unwrap();
-        let (descriptor_set_layouts, set_layout_info) =
+
+        let (mut descriptor_set_layouts, set_layout_info) =
             fragment_shader.create_descriptor_set_layouts(device, shader_info);
 
         let push_constant_ranges: Vec<vk::PushConstantRange> = desc
@@ -998,7 +1039,7 @@ impl GraphicsPipeline {
 
         let viewport = desc.viewport.unwrap_or(swapchain_size);
 
-        let viewports = vec![vk::Viewport {
+        let viewports = smallvec![vk::Viewport {
             x: 0.0,
             y: 0.0,
             width: viewport.width as f32,
@@ -1008,7 +1049,7 @@ impl GraphicsPipeline {
         }];
 
         let vk_viewport: vk::Extent2D = viewport.into();
-        let scissors = vec![vk_viewport.into()];
+        let scissors = smallvec![vk_viewport.into()];
         let viewport_state = vk::PipelineViewportStateCreateInfo::default()
             .scissors(&scissors)
             .viewports(&viewports);
@@ -1077,39 +1118,92 @@ impl GraphicsPipeline {
             (vec![], vk::DescriptorPool::null())
         };
 
+        // let mut descriptor_set_layouts = descriptor_set_layouts;
+        // let mut descriptor_sets = descriptor_sets;
+        // if let Some(prepend) = &desc.prepend_descriptor_sets {
+        //     descriptor_set_layouts = prepend
+        //         .layouts
+        //         .iter()
+        //         .chain(descriptor_set_layouts.iter())
+        //         .copied()
+        //         .collect();
+
+        //     descriptor_sets = prepend
+        //         .sets
+        //         .iter()
+        //         .chain(descriptor_sets.iter())
+        //         .copied()
+        //         .collect();
+        // }
+
         Self {
             pipeline,
             layout: pipeline_layout,
             descriptor_set_layouts,
             set_layout_info,
             descriptor_sets,
-            color_attachments: desc.fragment.color_attachment_formats.to_vec(),
+            color_attachments: desc.fragment.color_attachment_formats.to_smallvec(),
             depth_attachment: desc.fragment.depth_attachment_format,
             viewports,
             scissors,
             descriptor_pool,
+            ..Default::default()
         }
     }
 
-    pub fn bind(&self, device: &Device, command_buffer: vk::CommandBuffer) {
+    pub fn bind_descriptor_sets(&mut self, ctx: &RenderContext, command_buffer: vk::CommandBuffer) {
         unsafe {
-            device.cmd_bind_pipeline(
+            if !self.queued_descriptor_writes.is_empty() {
+                let writes: Vec<WriteDescriptorSet> = self
+                    .queued_descriptor_writes
+                    .iter()
+                    .map(|w| {
+                        let write = vk::WriteDescriptorSet::default()
+                            .dst_set(
+                                *self
+                                    .descriptor_sets
+                                    .get(w.set as usize)
+                                    .expect("Descriptor set not found"),
+                            )
+                            .dst_binding(w.binding)
+                            .dst_array_element(w.array_index)
+                            .descriptor_type(self.set_layout_info[w.set as usize][&w.binding]);
+
+                        match &w.descriptor_buffer {
+                            DescriptorWriteType::Buffer(buf) => {
+                                write.buffer_info(std::slice::from_ref(buf))
+                            }
+                            DescriptorWriteType::Image(tex) => {
+                                write.image_info(std::slice::from_ref(tex))
+                            }
+                        }
+                    })
+                    .collect();
+                ctx.device.update_descriptor_sets(&writes, &[]);
+            }
+
+            ctx.device.cmd_bind_descriptor_sets(
+                command_buffer,
+                vk::PipelineBindPoint::GRAPHICS,
+                self.layout,
+                0,
+                &self.descriptor_sets,
+                &[],
+            );
+        }
+    }
+
+    pub fn bind_pipeline(&self, ctx: &RenderContext, command_buffer: vk::CommandBuffer) {
+        unsafe {
+            ctx.device.cmd_bind_pipeline(
                 command_buffer,
                 vk::PipelineBindPoint::GRAPHICS,
                 self.pipeline,
             );
-            device.cmd_set_viewport(command_buffer, 0, &self.viewports);
-            device.cmd_set_scissor(command_buffer, 0, &self.scissors);
-            if !self.descriptor_sets.is_empty() {
-                device.cmd_bind_descriptor_sets(
-                    command_buffer,
-                    vk::PipelineBindPoint::GRAPHICS,
-                    self.layout,
-                    0,
-                    &self.descriptor_sets,
-                    &[],
-                );
-            }
+            ctx.device
+                .cmd_set_viewport(command_buffer, 0, &self.viewports);
+            ctx.device
+                .cmd_set_scissor(command_buffer, 0, &self.scissors);
         }
     }
 

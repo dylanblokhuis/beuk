@@ -2,14 +2,14 @@ use beuk::ash::vk::{self, BufferUsageFlags};
 use beuk::buffer::MemoryLocation;
 use beuk::buffer::{Buffer, BufferDescriptor};
 use beuk::ctx::RenderContextDescriptor;
-use beuk::memory::ResourceHandle;
-use beuk::pipeline::{
+use beuk::graphics_pipeline::{
     BlendState, FragmentState, GraphicsPipeline, VertexBufferLayout, VertexState,
 };
+use beuk::memory::ResourceHandle;
 use beuk::shaders::ShaderDescriptor;
 use beuk::{
     ctx::RenderContext,
-    pipeline::{GraphicsPipelineDescriptor, PrimitiveState},
+    graphics_pipeline::{GraphicsPipelineDescriptor, PrimitiveState},
 };
 use image::EncodableLayout;
 use raw_window_handle::{HasRawDisplayHandle, HasRawWindowHandle};
@@ -131,14 +131,14 @@ impl Canvas {
                 }),
                 buffers: smallvec![VertexBufferLayout {
                     array_stride: std::mem::size_of::<Vertex>() as u32,
-                    step_mode: beuk::pipeline::VertexStepMode::Vertex,
+                    step_mode: beuk::graphics_pipeline::VertexStepMode::Vertex,
                     attributes: smallvec![
-                        beuk::pipeline::VertexAttribute {
+                        beuk::graphics_pipeline::VertexAttribute {
                             shader_location: 0,
                             format: vk::Format::R32G32B32A32_SFLOAT,
                             offset: bytemuck::offset_of!(Vertex, pos) as u32,
                         },
-                        beuk::pipeline::VertexAttribute {
+                        beuk::graphics_pipeline::VertexAttribute {
                             shader_location: 1,
                             format: vk::Format::R32G32B32A32_SFLOAT,
                             offset: bytemuck::offset_of!(Vertex, color) as u32,
@@ -164,7 +164,7 @@ impl Canvas {
             depth_stencil: Default::default(),
             push_constant_range: None,
             blend: vec![BlendState::ALPHA_BLENDING],
-            multisample: beuk::pipeline::MultisampleState::default(),
+            multisample: beuk::graphics_pipeline::MultisampleState::default(),
         });
 
         let wallpaper_bytes = include_bytes!("./texture/95.jpg");
@@ -191,8 +191,6 @@ impl Canvas {
             false,
         );
 
-        // println!("texture handle: {:?}", image.width());
-
         let view = ctx.get_texture_view(&texture_handle).unwrap();
 
         unsafe {
@@ -205,9 +203,8 @@ impl Canvas {
                     .image_info(std::slice::from_ref(
                         &vk::DescriptorImageInfo::default()
                             .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
-                            .image_view(*view)
-                    )),                    
-                    ],
+                            .image_view(*view),
+                    ))],
                 &[],
             );
         }
@@ -224,7 +221,7 @@ impl Canvas {
 
         ctx.present_record(
             present_index,
-            |ctx, command_buffer, color_view, depth_view| unsafe {
+            |command_buffer, color_view, depth_view| unsafe {
                 let color_attachments = &[vk::RenderingAttachmentInfo::default()
                     .image_view(color_view)
                     .image_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
@@ -250,10 +247,12 @@ impl Canvas {
 
                 ctx.begin_rendering(command_buffer, color_attachments, Some(depth_attachment));
 
-                ctx.graphics_pipelines
-                    .get(&self.pipeline_handle)
-                    .unwrap()
-                    .bind(&ctx.device, command_buffer);
+                let pipeline = ctx
+                    .graphics_pipelines
+                    .get_mut(&self.pipeline_handle)
+                    .unwrap();
+                pipeline.bind_pipeline(ctx, command_buffer);
+                pipeline.bind_descriptor_sets(ctx, command_buffer);
 
                 ctx.device.cmd_bind_vertex_buffers(
                     command_buffer,

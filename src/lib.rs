@@ -1,8 +1,9 @@
 pub mod buffer;
 mod chunky_list;
+pub mod compute_pipeline;
 pub mod ctx;
+pub mod graphics_pipeline;
 pub mod memory;
-pub mod pipeline;
 pub mod shaders;
 pub mod texture;
 

@@ -1,0 +1,15 @@
+#version 450
+
+layout(local_size_x = 16, local_size_y = 16) in;
+
+layout(binding = 0, rgba8) uniform readonly image2D srcImage;
+layout(binding = 1, rgba8) uniform image2D dstImage;
+
+void main() {
+    ivec2 storePos = ivec2(gl_GlobalInvocationID.xy);
+
+    vec4 color = imageLoad(srcImage, storePos);
+    color.rgb = vec3(1.0) - color.rgb; // Invert colors
+
+    imageStore(dstImage, storePos, color);
+}
