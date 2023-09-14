@@ -64,7 +64,7 @@ fn test_capacity_growing() {
             test_capacity_with_vulkan_buffers(ctx.clone());
             test_capacity(ctx.clone());
             test_multithreaded(ctx.clone());
-
+            test_gc(ctx.clone());
             // requests a close
             proxy.send_event(()).unwrap();
         }
@@ -228,4 +228,30 @@ fn test_multithreaded(ctx: Arc<RenderContext>) {
         // println!("Resource {} has value {}", i, resource.yo);
     }
     // while
+}
+
+
+fn test_gc(
+    ctx: Arc<RenderContext>,
+) {
+    let resource_manager = Arc::new(ResourceManager::<Test>::new(
+        ctx.device.clone(),
+        ctx.allocator.clone(),
+        100,
+    ));
+
+    let before_free_increase = resource_manager.free_indices.lock().unwrap().len();
+
+    let id = resource_manager.create(Test {
+        yo: 0,
+        _pad: [0; 12],
+    });
+
+    let handle = ResourceHandle::new(id, resource_manager.clone());
+    let yo = resource_manager.get(&handle).unwrap();
+    assert_eq!(yo.yo, 0);
+    drop(yo);
+    drop(handle);
+    let after_free_increase = resource_manager.free_indices.lock().unwrap().len();
+    assert_eq!(before_free_increase, after_free_increase, "Should have the same amount of of free indices after dropping handle");
 }

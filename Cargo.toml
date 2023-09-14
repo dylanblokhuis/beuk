@@ -28,8 +28,13 @@ tracing-subscriber = { version = "0.3" }
 tracing-tracy = { version = "0.10" }
 simple_logger = "4.2.0"
 crossbeam-channel = "0.5.8"
+criterion = "0.5.1"
 
 [[test]]
 name = "beuk_tests"
 path = "beuk_tests/main.rs"
+harness = false
+
+[[bench]]
+name = "memory"
 harness = false

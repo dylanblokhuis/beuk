@@ -21,8 +21,6 @@ pub struct Resource<T> {
     generation: Generation,
     retain_count: usize,
 }
-unsafe impl<T> Send for Resource<T> {}
-unsafe impl<T> Sync for Resource<T> {}
 
 impl<T> std::ops::Deref for Resource<T> {
     type Target = T;
@@ -40,8 +38,6 @@ impl<T> std::ops::DerefMut for Resource<T> {
 
 #[derive(Debug)]
 struct ResourceInner<T>(Mutex<Resource<T>>);
-unsafe impl<T> Send for ResourceInner<T> {}
-unsafe impl<T> Sync for ResourceInner<T> {}
 
 /// Trait for resources that need to be cleaned up when they are destroyed.
 pub trait ResourceHooks {
@@ -88,8 +84,8 @@ impl<T: Default + Debug + ResourceHooks> ResourceHandle<T> {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct ResourceId {
-    index: Index,
-    generation: Generation,
+    pub(super) index: Index,
+    pub(super) generation: Generation,
 }
 
 impl<T: Default + Debug + ResourceHooks> Clone for ResourceHandle<T> {
@@ -114,7 +110,7 @@ impl<T: Default + Debug + ResourceHooks> Drop for ResourceHandle<T> {
 
 pub struct ResourceManager<T> {
     resources: Arc<boxcar::Vec<ResourceInner<T>>>,
-    free_indices: Arc<Mutex<VecDeque<usize>>>,
+    pub free_indices: Arc<Mutex<VecDeque<usize>>>,
     device: Arc<ash::Device>,
     allocator: Arc<Mutex<Allocator>>,
 }
@@ -219,6 +215,7 @@ impl<T: Default + Debug + ResourceHooks> ResourceManager<T> {
         let Some(lock) = resource else {
             return Err(anyhow!("No resource at index {:?}", handle.index));
         };
+
         let mut data = lock.0.lock().unwrap();
 
         if handle.generation != data.generation {
@@ -234,7 +231,7 @@ impl<T: Default + Debug + ResourceHooks> ResourceManager<T> {
             .cleanup(self.device.clone(), self.allocator.clone());
 
         // push to front to keep memory compact
-        let _ = self.free_indices.lock().unwrap().push_front(handle.index);
+        self.free_indices.lock().unwrap().push_front(handle.index);
         Ok(())
     }
 
