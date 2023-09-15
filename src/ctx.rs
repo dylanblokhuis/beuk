@@ -99,6 +99,28 @@ pub struct SamplerDesc {
     pub address_modes: vk::SamplerAddressMode,
 }
 
+impl SamplerDesc {
+    pub fn nearest(
+        address_modes: vk::SamplerAddressMode,
+    ) -> SamplerDesc {
+        Self {
+            texel_filter: vk::Filter::NEAREST,
+            mipmap_mode: vk::SamplerMipmapMode::NEAREST,
+            address_modes
+        }
+    }
+
+    pub fn linear(
+        address_modes: vk::SamplerAddressMode,
+    ) -> SamplerDesc {
+        Self {
+            texel_filter: vk::Filter::LINEAR,
+            mipmap_mode: vk::SamplerMipmapMode::LINEAR,
+            address_modes
+        }
+    }
+}
+
 #[derive(Clone)]
 pub struct RenderSwapchain {
     pub swapchain: vk::SwapchainKHR,
