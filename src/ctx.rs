@@ -1239,6 +1239,18 @@ impl RenderContext {
         );
 
         self.record_submit(|command_buffer| {
+            let mut texture = self.texture_manager.get_mut(&texture_handle).unwrap();
+            texture.transition(
+                &self.device,
+                command_buffer,
+                &TransitionDesc {
+                    new_layout: vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+                    new_access_mask: vk::AccessFlags::TRANSFER_WRITE,
+                    new_stage_mask: vk::PipelineStageFlags::TRANSFER,
+                },
+            );
+            drop(texture);
+
             self.copy_buffer_to_texture(command_buffer, &buffer_handle, &texture_handle, offset);
             let mut texture = self.texture_manager.get_mut(&texture_handle).unwrap();
             texture.transition(

@@ -84,7 +84,7 @@ impl<T: Default + Debug + ResourceHooks> ResourceHandle<T> {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct ResourceId {
-    pub(super) index: Index,
+    pub index: Index,
     pub(super) generation: Generation,
 }
 
