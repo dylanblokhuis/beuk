@@ -1,11 +1,9 @@
 use std::{
-    mem::size_of,
     sync::{Arc, Mutex},
 };
 
-use ash::vk::{Buffer, BufferUsageFlags, Extent2D};
+use ash::vk::{Extent2D};
 use beuk::{
-    buffer::{BufferDescriptor, MemoryLocation},
     ctx::{RenderContext, RenderContextDescriptor},
     memory::{
         ResourceHandle, ResourceHooks, ResourceManager, UnsafeResourceHandle, UnsafeResourceManager,
@@ -13,8 +11,8 @@ use beuk::{
 };
 use gpu_allocator::vulkan::Allocator;
 use raw_window_handle::{HasRawDisplayHandle, HasRawWindowHandle};
-use simple_logger::SimpleLogger;
-use winit::event_loop::ControlFlow;
+
+
 
 #[repr(C, align(16))]
 #[derive(Debug, Default, Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]

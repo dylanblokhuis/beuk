@@ -6,7 +6,7 @@ use gpu_allocator::{
 use std::sync::Arc;
 
 use crate::{
-    ctx::{CommandBuffer, RenderContext},
+    ctx::{RenderContext},
     memory::ResourceHooks,
 };
 

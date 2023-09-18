@@ -151,7 +151,7 @@ impl Shader {
         set_layout_info: &[FxHashMap<u32, vk::DescriptorType>],
     ) -> (Vec<vk::DescriptorSet>, vk::DescriptorPool) {
         let mut descriptor_pool_sizes: Vec<vk::DescriptorPoolSize> = Vec::new();
-        for (set, bindings) in set_layout_info.iter().enumerate() {
+        for (_set, bindings) in set_layout_info.iter().enumerate() {
             for ty in bindings.values() {
                 if let Some(dps) = descriptor_pool_sizes.iter_mut().find(|item| item.ty == *ty) {
                     dps.descriptor_count += 1;

@@ -3,7 +3,7 @@ use beuk::buffer::{Buffer, BufferDescriptor, MemoryLocation};
 use beuk::ctx::{RenderContextDescriptor, SamplerDesc};
 
 use beuk::graphics_pipeline::{
-    BlendState, FragmentState, GraphicsPipeline, PrependDescriptorSets, VertexBufferLayout,
+    BlendState, FragmentState, GraphicsPipeline, VertexBufferLayout,
     VertexState,
 };
 use beuk::memory::ResourceHandle;

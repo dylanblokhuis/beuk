@@ -6,7 +6,7 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use ash::vk::{Buffer, BufferUsageFlags, Extent2D};
+use ash::vk::{BufferUsageFlags, Extent2D};
 use beuk::{
     buffer::{BufferDescriptor, MemoryLocation},
     ctx::RenderContext,

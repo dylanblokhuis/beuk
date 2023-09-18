@@ -2,28 +2,25 @@ use std::mem::size_of;
 
 use ash::extensions::khr::AccelerationStructure;
 use ash::vk::{
-    AccelerationStructureBuildSizesInfoKHR, AccelerationStructureCreateInfoKHR,
-    AccelerationStructureKHR, Extent3D,
+    AccelerationStructureBuildSizesInfoKHR,
+    AccelerationStructureKHR,
 };
 use beuk::ash::vk::{self, BufferUsageFlags};
 use beuk::buffer::MemoryLocation;
 use beuk::buffer::{Buffer, BufferDescriptor};
 use beuk::compute_pipeline::{ComputePipeline, ComputePipelineDescriptor};
 use beuk::ctx::RenderContextDescriptor;
-use beuk::graphics_pipeline::{
-    BlendState, FragmentState, GraphicsPipeline, VertexBufferLayout, VertexState,
-};
+
 use beuk::memory::ResourceHandle;
 use beuk::shaders::ShaderDescriptor;
 use beuk::texture::Texture;
 use beuk::{
     ctx::RenderContext,
-    graphics_pipeline::{GraphicsPipelineDescriptor, PrimitiveState},
 };
-use glam::{Mat4, Vec3, Vec4};
-use image::EncodableLayout;
+use glam::{Mat4, Vec3};
+
 use raw_window_handle::{HasRawDisplayHandle, HasRawWindowHandle};
-use smallvec::smallvec;
+
 use tracing_subscriber::prelude::__tracing_subscriber_SubscriberExt;
 use winit::{
     event::{Event, WindowEvent},
@@ -423,7 +420,7 @@ impl Canvas {
             },
         );
 
-        let camera_position = Transform::from_xyz(-2.0, 0.2, 7.0).looking_at(Vec3::ZERO, Vec3::Y);
+        let _camera_position = Transform::from_xyz(-2.0, 0.2, 7.0).looking_at(Vec3::ZERO, Vec3::Y);
 
         let view = Mat4::look_at_rh(Vec3::new(0.0, 0.0, 2.5), Vec3::ZERO, Vec3::Y);
         let proj = Mat4::perspective_rh(59.0_f32.to_radians(), 16.0 / 9.0, 0.001, 1000.0);
@@ -511,7 +508,7 @@ impl Canvas {
 
         let present_index = ctx.acquire_present_index();
 
-        ctx.present_record(present_index, |command_buffer, image_view, depth_view| {
+        ctx.present_record(present_index, |_command_buffer, _image_view, _depth_view| {
             // ctx.copy_texture_to_texture(
             //     command_buffer,
             //     &mut ctx

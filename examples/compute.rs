@@ -312,7 +312,7 @@ impl Canvas {
 
         let present_index = ctx.acquire_present_index();
 
-        ctx.present_record(present_index, |command_buffer, image_view, depth_view| {
+        ctx.present_record(present_index, |command_buffer, _image_view, _depth_view| {
             ctx.copy_texture_to_texture(
                 command_buffer,
                 &mut ctx
