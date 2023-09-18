@@ -128,64 +128,70 @@ impl Canvas {
         let swapchain: std::sync::RwLockReadGuard<'_, beuk::ctx::RenderSwapchain> =
             ctx.get_swapchain();
 
-        let pipeline_handle = ctx.create_graphics_pipeline(GraphicsPipelineDescriptor {
-            vertex: VertexState {
+        let pipeline_handle = ctx.create_graphics_pipeline(
+            "triangle",
+            GraphicsPipelineDescriptor {
+                vertex: VertexState {
+                    shader: ctx.create_shader(ShaderDescriptor {
+                        kind: beuk::shaders::ShaderKind::Vertex,
+                        entry_point: "main".into(),
+                        source: include_str!("./triangle/shader.vert").into(),
+                        ..Default::default()
+                    }),
+                    buffers: smallvec![VertexBufferLayout {
+                        array_stride: std::mem::size_of::<Vertex>() as u32,
+                        step_mode: beuk::graphics_pipeline::VertexStepMode::Vertex,
+                        attributes: smallvec![
+                            beuk::graphics_pipeline::VertexAttribute {
+                                shader_location: 0,
+                                format: vk::Format::R32G32B32A32_SFLOAT,
+                                offset: bytemuck::offset_of!(Vertex, pos) as u32,
+                            },
+                            beuk::graphics_pipeline::VertexAttribute {
+                                shader_location: 1,
+                                format: vk::Format::R32G32B32A32_SFLOAT,
+                                offset: bytemuck::offset_of!(Vertex, color) as u32,
+                            },
+                        ],
+                    }],
+                },
+                fragment: FragmentState {
+                    shader: ctx.create_shader(ShaderDescriptor {
+                        kind: beuk::shaders::ShaderKind::Fragment,
+                        entry_point: "main".into(),
+                        source: include_str!("./triangle/shader.frag").into(),
+                        ..Default::default()
+                    }),
+                    color_attachment_formats: smallvec![swapchain.surface_format.format],
+                    depth_attachment_format: vk::Format::UNDEFINED,
+                },
+
+                viewport: None,
+                primitive: PrimitiveState {
+                    topology: vk::PrimitiveTopology::TRIANGLE_LIST,
+                    ..Default::default()
+                },
+                depth_stencil: Default::default(),
+                push_constant_range: None,
+                blend: vec![BlendState::ALPHA_BLENDING],
+                multisample: beuk::graphics_pipeline::MultisampleState::default(),
+                prepend_descriptor_sets: None,
+            },
+        );
+
+        let compute_handle = ctx.create_compute_pipeline(
+            "invert colors",
+            ComputePipelineDescriptor {
                 shader: ctx.create_shader(ShaderDescriptor {
-                    kind: beuk::shaders::ShaderKind::Vertex,
+                    kind: beuk::shaders::ShaderKind::Compute,
                     entry_point: "main".into(),
-                    source: include_str!("./triangle/shader.vert").into(),
+                    source: include_str!("./triangle/shader.comp").into(),
                     ..Default::default()
                 }),
-                buffers: smallvec![VertexBufferLayout {
-                    array_stride: std::mem::size_of::<Vertex>() as u32,
-                    step_mode: beuk::graphics_pipeline::VertexStepMode::Vertex,
-                    attributes: smallvec![
-                        beuk::graphics_pipeline::VertexAttribute {
-                            shader_location: 0,
-                            format: vk::Format::R32G32B32A32_SFLOAT,
-                            offset: bytemuck::offset_of!(Vertex, pos) as u32,
-                        },
-                        beuk::graphics_pipeline::VertexAttribute {
-                            shader_location: 1,
-                            format: vk::Format::R32G32B32A32_SFLOAT,
-                            offset: bytemuck::offset_of!(Vertex, color) as u32,
-                        },
-                    ],
-                }],
+                push_constant_range: None,
+                prepend_descriptor_sets: None,
             },
-            fragment: FragmentState {
-                shader: ctx.create_shader(ShaderDescriptor {
-                    kind: beuk::shaders::ShaderKind::Fragment,
-                    entry_point: "main".into(),
-                    source: include_str!("./triangle/shader.frag").into(),
-                    ..Default::default()
-                }),
-                color_attachment_formats: smallvec![swapchain.surface_format.format],
-                depth_attachment_format: vk::Format::UNDEFINED,
-            },
-
-            viewport: None,
-            primitive: PrimitiveState {
-                topology: vk::PrimitiveTopology::TRIANGLE_LIST,
-                ..Default::default()
-            },
-            depth_stencil: Default::default(),
-            push_constant_range: None,
-            blend: vec![BlendState::ALPHA_BLENDING],
-            multisample: beuk::graphics_pipeline::MultisampleState::default(),
-            prepend_descriptor_sets: None,
-        });
-
-        let compute_handle = ctx.create_compute_pipeline(ComputePipelineDescriptor {
-            shader: ctx.create_shader(ShaderDescriptor {
-                kind: beuk::shaders::ShaderKind::Compute,
-                entry_point: "main".into(),
-                source: include_str!("./triangle/shader.comp").into(),
-                ..Default::default()
-            }),
-            push_constant_range: None,
-            prepend_descriptor_sets: None,
-        });
+        );
 
         let attachment_format = swapchain.surface_format.format;
         let attachment_handle = ctx.create_texture(
@@ -277,7 +283,7 @@ impl Canvas {
 
             // flip colors with compute
             let mut compute_pipeline = ctx.compute_pipelines.get_mut(&self.compute_handle).unwrap();
-            compute_pipeline.update_descriptor_image(
+            compute_pipeline.queue_descriptor_image(
                 0,
                 0,
                 0,
@@ -285,7 +291,7 @@ impl Canvas {
                     .image_view(*attachment_view)
                     .image_layout(vk::ImageLayout::GENERAL),
             );
-            compute_pipeline.update_descriptor_image(
+            compute_pipeline.queue_descriptor_image(
                 0,
                 1,
                 0,

@@ -55,7 +55,7 @@ impl From<ShaderOptimization> for OptimizationLevel {
 
 #[derive(Clone, Debug, Default, Hash, PartialEq, Eq)]
 pub struct ShaderDescriptor {
-    pub label: Option<String>,
+    pub label: &'static str,
     pub source: Cow<'static, str>,
     pub kind: ShaderKind,
     pub defines: Vec<(String, Option<String>)>,
@@ -149,13 +149,9 @@ impl Shader {
         shader_info: &ImmutableShaderInfo,
         descriptor_set_layouts: &[vk::DescriptorSetLayout],
         set_layout_info: &[FxHashMap<u32, vk::DescriptorType>],
-        skip_sets: &[u32],
     ) -> (Vec<vk::DescriptorSet>, vk::DescriptorPool) {
         let mut descriptor_pool_sizes: Vec<vk::DescriptorPoolSize> = Vec::new();
         for (set, bindings) in set_layout_info.iter().enumerate() {
-            if skip_sets.contains(&(set as u32)) {
-                continue;
-            }
             for ty in bindings.values() {
                 if let Some(dps) = descriptor_pool_sizes.iter_mut().find(|item| item.ty == *ty) {
                     dps.descriptor_count += 1;
@@ -185,7 +181,7 @@ impl Shader {
 
         let desc_alloc_info = vk::DescriptorSetAllocateInfo::default()
             .descriptor_pool(descriptor_pool)
-            .set_layouts(descriptor_set_layouts);
+            .set_layouts(&descriptor_set_layouts);
 
         (
             unsafe { device.allocate_descriptor_sets(&desc_alloc_info).unwrap() },

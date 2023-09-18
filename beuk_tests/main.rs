@@ -127,10 +127,13 @@ fn test_capacity(ctx: Arc<RenderContext>) {
 
     let mut handles = vec![];
     for i in 0..20000 {
-        let id = resource_manager.create(Test {
-            yo: i,
-            _pad: [0; 12],
-        });
+        let id = resource_manager.create(
+            "test",
+            Test {
+                yo: i,
+                _pad: [0; 12],
+            },
+        );
         handles.push(ResourceHandle::new(id, resource_manager.clone()));
     }
 
@@ -230,10 +233,7 @@ fn test_multithreaded(ctx: Arc<RenderContext>) {
     // while
 }
 
-
-fn test_gc(
-    ctx: Arc<RenderContext>,
-) {
+fn test_gc(ctx: Arc<RenderContext>) {
     let resource_manager = Arc::new(ResourceManager::<Test>::new(
         ctx.device.clone(),
         ctx.allocator.clone(),
@@ -242,10 +242,13 @@ fn test_gc(
 
     let before_free_increase = resource_manager.free_indices.lock().unwrap().len();
 
-    let id = resource_manager.create(Test {
-        yo: 0,
-        _pad: [0; 12],
-    });
+    let id = resource_manager.create(
+        "test",
+        Test {
+            yo: 0,
+            _pad: [0; 12],
+        },
+    );
 
     let handle = ResourceHandle::new(id, resource_manager.clone());
     let yo = resource_manager.get(&handle).unwrap();
@@ -253,5 +256,8 @@ fn test_gc(
     drop(yo);
     drop(handle);
     let after_free_increase = resource_manager.free_indices.lock().unwrap().len();
-    assert_eq!(before_free_increase, after_free_increase, "Should have the same amount of of free indices after dropping handle");
+    assert_eq!(
+        before_free_increase, after_free_increase,
+        "Should have the same amount of of free indices after dropping handle"
+    );
 }

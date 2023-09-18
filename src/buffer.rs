@@ -14,6 +14,8 @@ pub struct Buffer {
     pub device_addr: u64,
     pub has_been_written_to: bool,
     pub offset: u64,
+    pub access_mask: vk::AccessFlags,
+    pub stage_mask: vk::PipelineStageFlags,
 }
 
 impl ResourceHooks for Buffer {
@@ -104,6 +106,8 @@ impl Buffer {
             device_addr,
             has_been_written_to: false,
             offset,
+            access_mask: vk::AccessFlags::empty(),
+            stage_mask: vk::PipelineStageFlags::empty(),
         }
     }
 
@@ -161,5 +165,28 @@ impl Buffer {
     #[inline]
     pub fn buffer(&self) -> vk::Buffer {
         self.buffer
+    }
+
+    pub fn transition_memory(
+        &mut self,
+        device: &ash::Device,
+        command_buffer: vk::CommandBuffer,
+        dst_access_mask: vk::AccessFlags,
+        dst_stage_mask: vk::PipelineStageFlags,
+    ) {
+        let memory_barrier = vk::MemoryBarrier::default()
+            .src_access_mask(self.access_mask)
+            .dst_access_mask(dst_access_mask);
+        unsafe {
+            device.cmd_pipeline_barrier(
+                command_buffer,
+                self.stage_mask,
+                dst_stage_mask,
+                vk::DependencyFlags::empty(),
+                &[memory_barrier],
+                &[],
+                &[],
+            );
+        }
     }
 }

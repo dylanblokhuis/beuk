@@ -823,7 +823,6 @@ impl PrependDescriptorSets {
             &immutable_shader_info,
             &layouts,
             &set_layout_info,
-            &[],
         );
 
         Self {
@@ -991,6 +990,17 @@ impl GraphicsPipeline {
         let (mut shader_descriptor_set_layouts, mut shader_set_layout_info) =
             fragment_shader.create_descriptor_set_layouts(device, shader_info, &sets_prepended);
 
+        let (descriptor_sets, descriptor_pool) = if !shader_set_layout_info.is_empty() {
+            fragment_shader.create_descriptor_sets(
+                device,
+                shader_info,
+                &shader_descriptor_set_layouts,
+                &shader_set_layout_info,
+            )
+        } else {
+            (vec![], vk::DescriptorPool::null())
+        };
+
         descriptor_set_layouts.append(&mut shader_descriptor_set_layouts);
         set_layout_info.append(&mut shader_set_layout_info);
 
@@ -1139,18 +1149,6 @@ impl GraphicsPipeline {
                 .unwrap()[0]
         };
 
-        let (descriptor_sets, descriptor_pool) = if !set_layout_info.is_empty() {
-            fragment_shader.create_descriptor_sets(
-                device,
-                shader_info,
-                &descriptor_set_layouts,
-                &set_layout_info,
-                &sets_prepended,
-            )
-        } else {
-            (vec![], vk::DescriptorPool::null())
-        };
-
         Self {
             pipeline,
             layout: pipeline_layout,
@@ -1167,36 +1165,76 @@ impl GraphicsPipeline {
         }
     }
 
+    pub fn update_descriptors(&mut self, ctx: &RenderContext) {
+        unsafe {
+            if self.queued_descriptor_writes.is_empty() {
+                return;
+            }
+
+            let writes: Vec<WriteDescriptorSet> = self
+                .queued_descriptor_writes
+                .iter()
+                .map(|w| {
+                    let write = vk::WriteDescriptorSet::default()
+                        .dst_set(
+                            *self
+                                .descriptor_sets
+                                .get(w.set as usize)
+                                .expect("Descriptor set not found"),
+                        )
+                        .dst_binding(w.binding)
+                        .dst_array_element(w.array_index)
+                        .descriptor_type(self.set_layout_info[w.set as usize][&w.binding]);
+
+                    match &w.descriptor_buffer {
+                        DescriptorWriteType::Buffer(buf) => {
+                            write.buffer_info(std::slice::from_ref(buf))
+                        }
+                        DescriptorWriteType::Image(tex) => {
+                            write.image_info(std::slice::from_ref(tex))
+                        }
+                    }
+                })
+                .collect();
+
+            ctx.device.update_descriptor_sets(&writes, &[]);
+            self.queued_descriptor_writes.clear();
+        }
+    }
+
+    pub fn queue_descriptor_buffer(
+        &mut self,
+        set: u32,
+        binding: u32,
+        array_index: u32,
+        descriptor_buffer: vk::DescriptorBufferInfo,
+    ) {
+        self.queued_descriptor_writes.push(DescriptorWrite {
+            set,
+            binding,
+            array_index,
+            descriptor_buffer: DescriptorWriteType::Buffer(descriptor_buffer),
+        });
+    }
+
+    pub fn queue_descriptor_image(
+        &mut self,
+        set: u32,
+        binding: u32,
+        array_index: u32,
+        image_info: vk::DescriptorImageInfo,
+    ) {
+        self.queued_descriptor_writes.push(DescriptorWrite {
+            set,
+            binding,
+            array_index,
+            descriptor_buffer: DescriptorWriteType::Image(image_info),
+        });
+    }
+
     pub fn bind_descriptor_sets(&mut self, ctx: &RenderContext, command_buffer: vk::CommandBuffer) {
         unsafe {
-            if !self.queued_descriptor_writes.is_empty() {
-                let writes: Vec<WriteDescriptorSet> = self
-                    .queued_descriptor_writes
-                    .iter()
-                    .map(|w| {
-                        let write = vk::WriteDescriptorSet::default()
-                            .dst_set(
-                                *self
-                                    .descriptor_sets
-                                    .get(w.set as usize)
-                                    .expect("Descriptor set not found"),
-                            )
-                            .dst_binding(w.binding)
-                            .dst_array_element(w.array_index)
-                            .descriptor_type(self.set_layout_info[w.set as usize][&w.binding]);
-
-                        match &w.descriptor_buffer {
-                            DescriptorWriteType::Buffer(buf) => {
-                                write.buffer_info(std::slice::from_ref(buf))
-                            }
-                            DescriptorWriteType::Image(tex) => {
-                                write.image_info(std::slice::from_ref(tex))
-                            }
-                        }
-                    })
-                    .collect();
-                ctx.device.update_descriptor_sets(&writes, &[]);
-            }
+            self.update_descriptors(ctx);
 
             let offset = if let Some(prepend_descriptor_sets) = &self.prepended_descriptor_sets {
                 ctx.device.cmd_bind_descriptor_sets(
@@ -1247,8 +1285,8 @@ impl GraphicsPipeline {
         }
 
         unsafe {
-            device.destroy_pipeline_layout(self.layout, None);
             device.destroy_pipeline(self.pipeline, None);
+            device.destroy_pipeline_layout(self.layout, None);
 
             if !self.descriptor_sets.is_empty() {
                 device

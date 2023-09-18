@@ -7,7 +7,9 @@ use ash::vk::{Buffer, BufferUsageFlags, Extent2D};
 use beuk::{
     buffer::{BufferDescriptor, MemoryLocation},
     ctx::{RenderContext, RenderContextDescriptor},
-    memory::{ResourceHandle, ResourceHooks, ResourceManager, UnsafeResourceManager, UnsafeResourceHandle},
+    memory::{
+        ResourceHandle, ResourceHooks, ResourceManager, UnsafeResourceHandle, UnsafeResourceManager,
+    },
 };
 use gpu_allocator::vulkan::Allocator;
 use raw_window_handle::{HasRawDisplayHandle, HasRawWindowHandle};
@@ -54,72 +56,81 @@ pub fn criterion_benchmark(c: &mut Criterion) {
         100,
     ));
 
-    c.bench_function("create", |b| b.iter(|| create(black_box(resource_manager.clone()))));
+    c.bench_function("create", |b| {
+        b.iter(|| create(black_box(resource_manager.clone())))
+    });
 
     let resource_manager = Arc::new(ResourceManager::<Test>::new(
         ctx.device.clone(),
         ctx.allocator.clone(),
         100,
     ));
-    c.bench_function("create and get", |b| b.iter(|| create_and_get(black_box(resource_manager.clone()))));
-
-
-    let resource_manager = Arc::new(UnsafeResourceManager::<Test>::new(
-      ctx.device.clone(),
-      ctx.allocator.clone(),
-      100,
-  ));
-    c.bench_function("unsafe create", |b| b.iter(|| unsafe_create(black_box(resource_manager.clone()))));
+    c.bench_function("create and get", |b| {
+        b.iter(|| create_and_get(black_box(resource_manager.clone())))
+    });
 
     let resource_manager = Arc::new(UnsafeResourceManager::<Test>::new(
-      ctx.device.clone(),
-      ctx.allocator.clone(),
-      100,
-  ));
-  c.bench_function("unsafe create and get", |b| b.iter(|| unsafe_create_and_get(black_box(resource_manager.clone()))));
+        ctx.device.clone(),
+        ctx.allocator.clone(),
+        100,
+    ));
+    c.bench_function("unsafe create", |b| {
+        b.iter(|| unsafe_create(black_box(resource_manager.clone())))
+    });
 
-
+    let resource_manager = Arc::new(UnsafeResourceManager::<Test>::new(
+        ctx.device.clone(),
+        ctx.allocator.clone(),
+        100,
+    ));
+    c.bench_function("unsafe create and get", |b| {
+        b.iter(|| unsafe_create_and_get(black_box(resource_manager.clone())))
+    });
 }
 
 criterion_group!(benches, criterion_benchmark);
 criterion_main!(benches);
 
 fn create(manager: Arc<ResourceManager<Test>>) {
-    let id = manager.create(Test {
-        yo: 0,
-        _pad: [0; 12],
-    });
+    let id = manager.create(
+        "test",
+        Test {
+            yo: 0,
+            _pad: [0; 12],
+        },
+    );
     let handle = ResourceHandle::new(id, manager.clone());
     drop(handle);
 }
 
 fn create_and_get(manager: Arc<ResourceManager<Test>>) {
-  let id = manager.create(Test {
-      yo: 0,
-      _pad: [0; 12],
-  });
+    let id = manager.create(
+        "test",
+        Test {
+            yo: 0,
+            _pad: [0; 12],
+        },
+    );
 
-  let handle = ResourceHandle::new(id, manager.clone());
-  let _ = manager.get(&handle);
+    let handle = ResourceHandle::new(id, manager.clone());
+    let _ = manager.get(&handle);
 }
 
-
 fn unsafe_create(manager: Arc<UnsafeResourceManager<Test>>) {
-  let id = manager.create(Test {
-      yo: 0,
-      _pad: [0; 12],
-  });
-  let handle = UnsafeResourceHandle::new(id, manager.clone());
-  drop(handle);
+    let id = manager.create(Test {
+        yo: 0,
+        _pad: [0; 12],
+    });
+    let handle = UnsafeResourceHandle::new(id, manager.clone());
+    drop(handle);
 }
 
 fn unsafe_create_and_get(manager: Arc<UnsafeResourceManager<Test>>) {
-  let id = manager.create(Test {
-      yo: 0,
-      _pad: [0; 12],
-  });
+    let id = manager.create(Test {
+        yo: 0,
+        _pad: [0; 12],
+    });
 
-  let handle = UnsafeResourceHandle::new(id, manager.clone());
-  let _ = manager.get(&handle);
+    let handle = UnsafeResourceHandle::new(id, manager.clone());
+    let _ = manager.get(&handle);
 }
-

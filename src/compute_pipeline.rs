@@ -25,6 +25,8 @@ impl ResourceHooks for ComputePipeline {
         device: std::sync::Arc<ash::Device>,
         allocator: std::sync::Arc<std::sync::Mutex<gpu_allocator::vulkan::Allocator>>,
     ) {
+        drop(allocator);
+        self.destroy(&device)
     }
     fn on_swapchain_resize(
         &mut self,
@@ -75,6 +77,8 @@ impl ComputePipeline {
             Vec::new()
         };
 
+        println!("sets_prepended: {:?}", sets_prepended);
+
         let mut descriptor_set_layouts = desc
             .prepend_descriptor_sets
             .as_ref()
@@ -87,6 +91,17 @@ impl ComputePipeline {
 
         let (mut shader_descriptor_set_layouts, mut shader_set_layout_info) = shader
             .create_descriptor_set_layouts(&ctx.device, immutable_shader_info, &sets_prepended);
+
+        let (descriptor_sets, descriptor_pool) = if !shader_set_layout_info.is_empty() {
+            shader.create_descriptor_sets(
+                &ctx.device,
+                immutable_shader_info,
+                &shader_descriptor_set_layouts,
+                &shader_set_layout_info,
+            )
+        } else {
+            (vec![], vk::DescriptorPool::null())
+        };
 
         descriptor_set_layouts.append(&mut shader_descriptor_set_layouts);
         set_layout_info.append(&mut shader_set_layout_info);
@@ -121,18 +136,6 @@ impl ComputePipeline {
                 .unwrap()[0]
         };
 
-        let (descriptor_sets, descriptor_pool) = if !set_layout_info.is_empty() {
-            shader.create_descriptor_sets(
-                &ctx.device,
-                immutable_shader_info,
-                &descriptor_set_layouts,
-                &set_layout_info,
-                &sets_prepended,
-            )
-        } else {
-            (vec![], vk::DescriptorPool::null())
-        };
-
         Self {
             pipeline,
             layout: pipeline_layout,
@@ -145,31 +148,44 @@ impl ComputePipeline {
         }
     }
 
-    pub fn update_descriptors(&self, device: &ash::Device) {
+    pub fn update_descriptors(&mut self, ctx: &RenderContext) {
         unsafe {
-            let mut writes = vec![];
-
-            for (set, info) in self.set_layout_info.iter().enumerate() {
-                for (binding, binding_type) in info.iter() {
-                    writes.push(
-                        vk::WriteDescriptorSet::default()
-                            .dst_set(
-                                *self
-                                    .descriptor_sets
-                                    .get(set)
-                                    .expect("Descriptor set not found"),
-                            )
-                            .dst_binding(*binding)
-                            .descriptor_type(*binding_type),
-                    )
-                }
+            if self.queued_descriptor_writes.is_empty() {
+                return;
             }
 
-            device.update_descriptor_sets(&writes, &[]);
+            let writes: Vec<WriteDescriptorSet> = self
+                .queued_descriptor_writes
+                .iter()
+                .map(|w| {
+                    let write = vk::WriteDescriptorSet::default()
+                        .dst_set(
+                            *self
+                                .descriptor_sets
+                                .get(w.set as usize)
+                                .expect("Descriptor set not found"),
+                        )
+                        .dst_binding(w.binding)
+                        .dst_array_element(w.array_index)
+                        .descriptor_type(self.set_layout_info[w.set as usize][&w.binding]);
+
+                    match &w.descriptor_buffer {
+                        DescriptorWriteType::Buffer(buf) => {
+                            write.buffer_info(std::slice::from_ref(buf))
+                        }
+                        DescriptorWriteType::Image(tex) => {
+                            write.image_info(std::slice::from_ref(tex))
+                        }
+                    }
+                })
+                .collect();
+
+            ctx.device.update_descriptor_sets(&writes, &[]);
+            self.queued_descriptor_writes.clear();
         }
     }
 
-    pub fn update_descriptor_buffer(
+    pub fn queue_descriptor_buffer(
         &mut self,
         set: u32,
         binding: u32,
@@ -184,7 +200,7 @@ impl ComputePipeline {
         });
     }
 
-    pub fn update_descriptor_image(
+    pub fn queue_descriptor_image(
         &mut self,
         set: u32,
         binding: u32,
@@ -201,40 +217,31 @@ impl ComputePipeline {
 
     pub fn bind_descriptor_sets(&mut self, ctx: &RenderContext, command_buffer: vk::CommandBuffer) {
         unsafe {
-            if !self.queued_descriptor_writes.is_empty() {
-                let writes: Vec<WriteDescriptorSet> = self
-                    .queued_descriptor_writes
-                    .iter()
-                    .map(|w| {
-                        let write = vk::WriteDescriptorSet::default()
-                            .dst_set(
-                                *self
-                                    .descriptor_sets
-                                    .get(w.set as usize)
-                                    .expect("Descriptor set not found"),
-                            )
-                            .dst_binding(w.binding)
-                            .dst_array_element(w.array_index)
-                            .descriptor_type(self.set_layout_info[w.set as usize][&w.binding]);
+            self.update_descriptors(ctx);
 
-                        match &w.descriptor_buffer {
-                            DescriptorWriteType::Buffer(buf) => {
-                                write.buffer_info(std::slice::from_ref(buf))
-                            }
-                            DescriptorWriteType::Image(tex) => {
-                                write.image_info(std::slice::from_ref(tex))
-                            }
-                        }
-                    })
-                    .collect();
-                ctx.device.update_descriptor_sets(&writes, &[]);
+            let offset = if let Some(prepend_descriptor_sets) = &self.prepended_descriptor_sets {
+                ctx.device.cmd_bind_descriptor_sets(
+                    command_buffer,
+                    vk::PipelineBindPoint::COMPUTE,
+                    self.layout,
+                    0,
+                    &prepend_descriptor_sets.sets,
+                    &[],
+                );
+                prepend_descriptor_sets.sets.len() as u32
+            } else {
+                0
+            };
+
+            if self.descriptor_sets.is_empty() {
+                return;
             }
 
             ctx.device.cmd_bind_descriptor_sets(
                 command_buffer,
                 vk::PipelineBindPoint::COMPUTE,
                 self.layout,
-                0,
+                offset,
                 &self.descriptor_sets,
                 &[],
             );
@@ -248,6 +255,25 @@ impl ComputePipeline {
                 vk::PipelineBindPoint::COMPUTE,
                 self.pipeline,
             );
+        }
+    }
+    pub fn destroy(&mut self, device: &ash::Device) {
+        if self.pipeline == Default::default() {
+            return;
+        }
+
+        unsafe {
+            device.destroy_pipeline(self.pipeline, None);
+            device.destroy_pipeline_layout(self.layout, None);
+            if !self.descriptor_sets.is_empty() {
+                device
+                    .free_descriptor_sets(self.descriptor_pool, &self.descriptor_sets)
+                    .unwrap();
+            }
+            device.destroy_descriptor_pool(self.descriptor_pool, None);
+            for layout in &self.descriptor_set_layouts {
+                device.destroy_descriptor_set_layout(*layout, None);
+            }
         }
     }
 }

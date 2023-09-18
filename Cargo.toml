@@ -29,6 +29,7 @@ tracing-tracy = { version = "0.10" }
 simple_logger = "4.2.0"
 crossbeam-channel = "0.5.8"
 criterion = "0.5.1"
+glam = { version = "0.24.1", features = ["bytemuck"] }
 
 [[test]]
 name = "beuk_tests"

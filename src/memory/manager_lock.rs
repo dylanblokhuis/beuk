@@ -18,6 +18,7 @@ pub type Index = usize;
 #[derive(Debug)]
 pub struct Resource<T> {
     inner: T,
+    label: &'static str,
     generation: Generation,
     retain_count: usize,
 }
@@ -135,6 +136,7 @@ impl<T: Default + Debug + ResourceHooks> ResourceManager<T> {
         for i in 0..capacity {
             queue.push_back(i);
             resources.push(ResourceInner(Mutex::new(Resource {
+                label: Default::default(),
                 inner: Default::default(),
                 generation: 0,
                 retain_count: 0,
@@ -182,10 +184,15 @@ impl<T: Default + Debug + ResourceHooks> ResourceManager<T> {
     }
 
     #[tracing::instrument(skip_all, name = "create")]
-    pub fn create(&self, resource: T) -> ResourceId {
+    pub fn create(&self, label: &'static str, resource: T) -> ResourceId {
         let index = self.get_index();
 
-        log::debug!("Creating {:?} at index {} ", type_name::<T>(), index,);
+        log::debug!(
+            "Creating {:?} | {:?} at index {} ",
+            if label.is_empty() { "Unnamed" } else { label },
+            type_name::<T>(),
+            index,
+        );
 
         let new_generation = {
             let old_resource = self.resources[index].0.lock().unwrap();
@@ -199,6 +206,7 @@ impl<T: Default + Debug + ResourceHooks> ResourceManager<T> {
 
         *self.resources[index].0.lock().unwrap() = Resource {
             inner: resource,
+            label,
             generation: new_generation,
             retain_count: 1,
         };
@@ -227,8 +235,20 @@ impl<T: Default + Debug + ResourceHooks> ResourceManager<T> {
             return Ok(());
         }
 
+        log::debug!(
+            "Destroying {:?} | {:?} at index {} ",
+            if data.label.is_empty() {
+                "Unnamed"
+            } else {
+                data.label
+            },
+            type_name::<T>(),
+            handle.index,
+        );
         data.inner
             .cleanup(self.device.clone(), self.allocator.clone());
+        data.inner = Default::default();
+        data.label = Default::default();
 
         // push to front to keep memory compact
         self.free_indices.lock().unwrap().push_front(handle.index);
@@ -255,6 +275,7 @@ impl<T: Default + Debug + ResourceHooks> ResourceManager<T> {
             // Populate the resources and free_indices with the new capacity.
             for i in current_capacity..new_capacity {
                 self.resources.push(ResourceInner(Mutex::new(Resource {
+                    label: Default::default(),
                     inner: Default::default(),
                     generation: 0,
                     retain_count: 0,

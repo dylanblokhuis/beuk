@@ -6,13 +6,16 @@ use ash::vk::{
 use ash::{
     extensions::{
         ext::{BufferDeviceAddress, DebugUtils},
-        khr::{DynamicRendering, Surface, Swapchain},
+        khr::{
+            AccelerationStructure, DeferredHostOperations, DynamicRendering, Surface, Swapchain,
+        },
     },
     vk::{
         DebugUtilsMessageSeverityFlagsEXT, DeviceSize, ExtDescriptorIndexingFn,
-        ImageSubresourceLayers, ImageView, KhrSamplerYcbcrConversionFn,
+        ImageSubresourceLayers, ImageView, KhrRayQueryFn, KhrSamplerYcbcrConversionFn,
         PhysicalDeviceBufferDeviceAddressFeaturesKHR, PhysicalDeviceDescriptorIndexingFeatures,
-        PhysicalDeviceSamplerYcbcrConversionFeatures, PresentModeKHR, SurfaceKHR, API_VERSION_1_2,
+        PhysicalDeviceRayQueryFeaturesKHR, PhysicalDeviceSamplerYcbcrConversionFeatures,
+        PresentModeKHR, SurfaceKHR, API_VERSION_1_2,
     },
 };
 use ash::{vk, Entry};
@@ -100,23 +103,19 @@ pub struct SamplerDesc {
 }
 
 impl SamplerDesc {
-    pub fn nearest(
-        address_modes: vk::SamplerAddressMode,
-    ) -> SamplerDesc {
+    pub fn nearest(address_modes: vk::SamplerAddressMode) -> SamplerDesc {
         Self {
             texel_filter: vk::Filter::NEAREST,
             mipmap_mode: vk::SamplerMipmapMode::NEAREST,
-            address_modes
+            address_modes,
         }
     }
 
-    pub fn linear(
-        address_modes: vk::SamplerAddressMode,
-    ) -> SamplerDesc {
+    pub fn linear(address_modes: vk::SamplerAddressMode) -> SamplerDesc {
         Self {
             texel_filter: vk::Filter::LINEAR,
             mipmap_mode: vk::SamplerMipmapMode::LINEAR,
-            address_modes
+            address_modes,
         }
     }
 }
@@ -177,6 +176,7 @@ pub struct RenderContext {
     pub pdevice: vk::PhysicalDevice,
     pub queue_family_index: u32,
     pub present_queue: Arc<Mutex<vk::Queue>>,
+    pub as_extension: AccelerationStructure,
 
     pub surface: vk::SurfaceKHR,
 
@@ -312,6 +312,9 @@ impl RenderContext {
                 ExtDescriptorIndexingFn::NAME.as_ptr(),
                 BufferDeviceAddress::NAME.as_ptr(),
                 KhrSamplerYcbcrConversionFn::NAME.as_ptr(),
+                KhrRayQueryFn::NAME.as_ptr(),
+                AccelerationStructure::NAME.as_ptr(),
+                DeferredHostOperations::NAME.as_ptr(),
                 #[cfg(any(target_os = "macos", target_os = "ios"))]
                 KhrPortabilitySubsetFn::NAME.as_ptr(),
                 #[cfg(any(target_os = "macos", target_os = "ios"))]
@@ -344,6 +347,13 @@ impl RenderContext {
                 .shader_storage_texel_buffer_array_dynamic_indexing(true)
                 .shader_uniform_texel_buffer_array_dynamic_indexing(true);
 
+            let mut ray_query_feature =
+                PhysicalDeviceRayQueryFeaturesKHR::default().ray_query(true);
+
+            let mut acceleration_structure_features =
+                vk::PhysicalDeviceAccelerationStructureFeaturesKHR::default()
+                    .acceleration_structure(true);
+
             let mut yuv_features = PhysicalDeviceSamplerYcbcrConversionFeatures::default()
                 .sampler_ycbcr_conversion(true);
 
@@ -358,7 +368,9 @@ impl RenderContext {
                 .push_next(&mut dynamic_rendering_features)
                 .push_next(&mut buffer_features)
                 .push_next(&mut indexing_features)
-                .push_next(&mut yuv_features);
+                .push_next(&mut yuv_features)
+                .push_next(&mut ray_query_feature)
+                .push_next(&mut acceleration_structure_features);
 
             let device = instance
                 .create_device(pdevice, &device_create_info, None)
@@ -427,19 +439,21 @@ impl RenderContext {
                 Self::create_command_thread_pool(device.clone(), queue_family_index);
             let command_thread_pool = Arc::new(command_thread_pool);
 
-            let buffer_manager = ResourceManager::new(device.clone(), allocator.clone(), 512);
-            let texture_manager = ResourceManager::new(device.clone(), allocator.clone(), 512);
+            let buffer_manager = ResourceManager::new(device.clone(), allocator.clone(), 52);
+            let texture_manager = ResourceManager::new(device.clone(), allocator.clone(), 52);
             let graphics_pipelines = ResourceManager::new(device.clone(), allocator.clone(), 32);
             let compute_pipelines = ResourceManager::new(device.clone(), allocator.clone(), 32);
             let shader_manager = ResourceManager::new(device.clone(), allocator.clone(), 32 * 2);
 
             let present_queue = Arc::new(Mutex::new(present_queue));
             let thread_id = std::thread::current().id();
+            let as_extension = AccelerationStructure::new(&instance, &device);
 
             Self {
                 allocator,
                 entry,
                 instance,
+                as_extension,
                 device: device.clone(),
                 dynamic_rendering,
                 queue_family_index,
@@ -1162,7 +1176,7 @@ impl RenderContext {
             desc.usage,
             desc.location,
         );
-        let id = self.buffer_manager.create(buffer);
+        let id = self.buffer_manager.create(desc.debug_name, buffer);
         ResourceHandle::new(id, self.buffer_manager.clone())
     }
 
@@ -1215,7 +1229,7 @@ impl RenderContext {
 
     pub fn create_texture(
         &self,
-        debug_name: &str,
+        debug_name: &'static str,
         create_info: &vk::ImageCreateInfo,
         // If true, the texture will be allocated in dedicated memory.
         is_dedicated: bool,
@@ -1227,13 +1241,13 @@ impl RenderContext {
             create_info,
             is_dedicated,
         );
-        let id = self.texture_manager.create(texture);
+        let id = self.texture_manager.create(debug_name, texture);
         ResourceHandle::new(id, self.texture_manager.clone())
     }
 
     pub fn create_texture_with_data(
         &self,
-        debug_name: &str,
+        debug_name: &'static str,
         create_info: &vk::ImageCreateInfo,
         data: &[u8],
         offset: u64,
@@ -1247,7 +1261,7 @@ impl RenderContext {
             create_info,
             is_dedicated,
         );
-        let id = self.texture_manager.create(texture);
+        let id = self.texture_manager.create(debug_name, texture);
         let texture_handle = ResourceHandle::new(id, self.texture_manager.clone());
         let buffer_handle = self.create_buffer_with_data(
             &BufferDescriptor {
@@ -1309,15 +1323,18 @@ impl RenderContext {
         log::debug!("Creating shader");
 
         let shader_desc = Arc::new(desc);
-        let id = self.shader_manager.create(Shader::from_source_text(
-            &self.device,
-            &shader_desc.source,
-            &shader_desc.label.clone().unwrap_or("Unnamed".to_string()),
-            shader_desc.kind,
-            &shader_desc.entry_point,
-            &shader_desc.defines,
-            shader_desc.optimization.into(),
-        ));
+        let id = self.shader_manager.create(
+            shader_desc.label,
+            Shader::from_source_text(
+                &self.device,
+                &shader_desc.source,
+                &shader_desc.label,
+                shader_desc.kind,
+                &shader_desc.entry_point,
+                &shader_desc.defines,
+                shader_desc.optimization.into(),
+            ),
+        );
         let handle = ResourceHandle::new(id, self.shader_manager.clone());
         self.shader_mapping
             .write()
@@ -1329,6 +1346,7 @@ impl RenderContext {
     /// if a pipeline with this descriptor already exists, it will be returned, otherwise a new one will be created.
     pub fn create_graphics_pipeline(
         &self,
+        label: &'static str,
         desc: GraphicsPipelineDescriptor,
     ) -> ResourceHandle<GraphicsPipeline> {
         log::debug!("Graphics pipeline hash: {}", get_hash(&desc));
@@ -1351,7 +1369,7 @@ impl RenderContext {
             self.get_swapchain().surface_resolution.into(),
             self.shader_manager.clone(),
         );
-        let id = self.graphics_pipelines.create(pipeline);
+        let id = self.graphics_pipelines.create(label, pipeline);
         let handle = ResourceHandle::new(id, self.graphics_pipelines.clone());
         let mut mapping = self.graphics_pipeline_mapping.write().unwrap();
         mapping.insert(pipeline_desc, handle.clone());
@@ -1360,10 +1378,11 @@ impl RenderContext {
 
     pub fn create_compute_pipeline(
         &self,
+        label: &'static str,
         desc: ComputePipelineDescriptor,
     ) -> ResourceHandle<ComputePipeline> {
         let pipeline = ComputePipeline::new(self, desc);
-        let id = self.compute_pipelines.create(pipeline);
+        let id = self.compute_pipelines.create(label, pipeline);
         ResourceHandle::new(id, self.compute_pipelines.clone())
     }
 

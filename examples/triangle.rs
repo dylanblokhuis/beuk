@@ -123,53 +123,56 @@ impl Canvas {
         let swapchain: std::sync::RwLockReadGuard<'_, beuk::ctx::RenderSwapchain> =
             ctx.get_swapchain();
 
-        let pipeline_handle = ctx.create_graphics_pipeline(GraphicsPipelineDescriptor {
-            vertex: VertexState {
-                shader: ctx.create_shader(ShaderDescriptor {
-                    kind: beuk::shaders::ShaderKind::Vertex,
-                    entry_point: "main".into(),
-                    source: include_str!("./triangle/shader.vert").into(),
-                    ..Default::default()
-                }),
-                buffers: smallvec![VertexBufferLayout {
-                    array_stride: std::mem::size_of::<Vertex>() as u32,
-                    step_mode: beuk::graphics_pipeline::VertexStepMode::Vertex,
-                    attributes: smallvec![
-                        beuk::graphics_pipeline::VertexAttribute {
-                            shader_location: 0,
-                            format: vk::Format::R32G32B32A32_SFLOAT,
-                            offset: bytemuck::offset_of!(Vertex, pos) as u32,
-                        },
-                        beuk::graphics_pipeline::VertexAttribute {
-                            shader_location: 1,
-                            format: vk::Format::R32G32B32A32_SFLOAT,
-                            offset: bytemuck::offset_of!(Vertex, color) as u32,
-                        },
-                    ],
-                }],
-            },
-            fragment: FragmentState {
-                shader: ctx.create_shader(ShaderDescriptor {
-                    kind: beuk::shaders::ShaderKind::Fragment,
-                    entry_point: "main".into(),
-                    source: include_str!("./triangle/shader.frag").into(),
-                    ..Default::default()
-                }),
-                color_attachment_formats: smallvec![swapchain.surface_format.format],
-                depth_attachment_format: swapchain.depth_image_format,
-            },
+        let pipeline_handle = ctx.create_graphics_pipeline(
+            "triangle",
+            GraphicsPipelineDescriptor {
+                vertex: VertexState {
+                    shader: ctx.create_shader(ShaderDescriptor {
+                        kind: beuk::shaders::ShaderKind::Vertex,
+                        entry_point: "main".into(),
+                        source: include_str!("./triangle/shader.vert").into(),
+                        ..Default::default()
+                    }),
+                    buffers: smallvec![VertexBufferLayout {
+                        array_stride: std::mem::size_of::<Vertex>() as u32,
+                        step_mode: beuk::graphics_pipeline::VertexStepMode::Vertex,
+                        attributes: smallvec![
+                            beuk::graphics_pipeline::VertexAttribute {
+                                shader_location: 0,
+                                format: vk::Format::R32G32B32A32_SFLOAT,
+                                offset: bytemuck::offset_of!(Vertex, pos) as u32,
+                            },
+                            beuk::graphics_pipeline::VertexAttribute {
+                                shader_location: 1,
+                                format: vk::Format::R32G32B32A32_SFLOAT,
+                                offset: bytemuck::offset_of!(Vertex, color) as u32,
+                            },
+                        ],
+                    }],
+                },
+                fragment: FragmentState {
+                    shader: ctx.create_shader(ShaderDescriptor {
+                        kind: beuk::shaders::ShaderKind::Fragment,
+                        entry_point: "main".into(),
+                        source: include_str!("./triangle/shader.frag").into(),
+                        ..Default::default()
+                    }),
+                    color_attachment_formats: smallvec![swapchain.surface_format.format],
+                    depth_attachment_format: swapchain.depth_image_format,
+                },
 
-            viewport: None,
-            primitive: PrimitiveState {
-                topology: vk::PrimitiveTopology::TRIANGLE_LIST,
-                ..Default::default()
+                viewport: None,
+                primitive: PrimitiveState {
+                    topology: vk::PrimitiveTopology::TRIANGLE_LIST,
+                    ..Default::default()
+                },
+                depth_stencil: Default::default(),
+                push_constant_range: None,
+                blend: vec![BlendState::ALPHA_BLENDING],
+                multisample: beuk::graphics_pipeline::MultisampleState::default(),
+                prepend_descriptor_sets: None,
             },
-            depth_stencil: Default::default(),
-            push_constant_range: None,
-            blend: vec![BlendState::ALPHA_BLENDING],
-            multisample: beuk::graphics_pipeline::MultisampleState::default(),
-            prepend_descriptor_sets: None,
-        });
+        );
 
         Self {
             pipeline_handle,
