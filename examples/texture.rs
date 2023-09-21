@@ -1,7 +1,8 @@
+use ash::vk::{SamplerAddressMode, Filter};
 use beuk::ash::vk::{self, BufferUsageFlags};
 use beuk::buffer::MemoryLocation;
 use beuk::buffer::{Buffer, BufferDescriptor};
-use beuk::ctx::RenderContextDescriptor;
+use beuk::ctx::{RenderContextDescriptor, SamplerDesc};
 use beuk::graphics_pipeline::{
     BlendState, FragmentState, GraphicsPipeline, VertexBufferLayout, VertexState,
 };
@@ -195,23 +196,23 @@ impl Canvas {
             false,
         );
 
-        let view = ctx.get_texture_view(&texture_handle).unwrap();
 
-        unsafe {
-            let pipeline = ctx.graphics_pipelines.get(&pipeline_handle).unwrap();
-            ctx.device.update_descriptor_sets(
-                &[vk::WriteDescriptorSet::default()
-                    .dst_set(pipeline.descriptor_sets[0])
-                    .dst_binding(0)
-                    .descriptor_type(vk::DescriptorType::SAMPLED_IMAGE)
-                    .image_info(std::slice::from_ref(
-                        &vk::DescriptorImageInfo::default()
-                            .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
-                            .image_view(*view),
-                    ))],
-                &[],
-            );
-        }
+        let mut pipeline = ctx.graphics_pipelines.get_mut(&pipeline_handle).unwrap();
+        pipeline.queue_descriptor_image(
+            0,
+            0,
+            0,
+            vk::DescriptorImageInfo::default()
+                .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
+                .sampler(
+                    *ctx.immutable_samplers.get(&SamplerDesc {
+                        address_modes: SamplerAddressMode::CLAMP_TO_EDGE,
+                        texel_filter: Filter::NEAREST,
+                        mipmap_mode: vk::SamplerMipmapMode::NEAREST,
+                    }).unwrap()   
+                )
+                .image_view(*ctx.get_texture_view(&texture_handle).unwrap()),
+        );
 
         Self {
             pipeline_handle,

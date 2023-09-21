@@ -31,6 +31,9 @@ crossbeam-channel = "0.5.8"
 criterion = "0.5.1"
 glam = { version = "0.24.1", features = ["bytemuck"] }
 
+[features]
+rt = []
+
 [[test]]
 name = "beuk_tests"
 path = "beuk_tests/main.rs"
