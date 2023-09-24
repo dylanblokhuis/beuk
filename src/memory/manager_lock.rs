@@ -17,7 +17,7 @@ pub type Index = usize;
 
 #[derive(Debug)]
 pub struct Resource<T> {
-    inner: T,
+    pub(crate) inner: T,
     label: &'static str,
     generation: Generation,
     retain_count: usize,

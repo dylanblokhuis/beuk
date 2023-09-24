@@ -5,10 +5,7 @@ use gpu_allocator::{
 };
 use std::sync::Arc;
 
-use crate::{
-    ctx::{RenderContext},
-    memory::ResourceHooks,
-};
+use crate::{ctx::RenderContext, memory::ResourceHooks};
 
 #[derive(Debug, Default)]
 pub struct Texture {
@@ -102,6 +99,19 @@ impl ResourceHooks for Texture {
     }
 }
 
+#[derive(Debug, Clone, Copy)]
+struct ImageViewDescriptor {
+    pub aspect_mask: vk::ImageAspectFlags,
+}
+
+impl Default for ImageViewDescriptor {
+    fn default() -> Self {
+        Self {
+            aspect_mask: vk::ImageAspectFlags::COLOR,
+        }
+    }
+}
+
 impl Texture {
     pub fn new(
         device: &ash::Device,
@@ -144,7 +154,11 @@ impl Texture {
             layout: vk::ImageLayout::UNDEFINED,
             access_mask: vk::AccessFlags::empty(),
             subresource_range: vk::ImageSubresourceRange::default()
-                .aspect_mask(vk::ImageAspectFlags::COLOR)
+                .aspect_mask(if Self::is_depth(image_info.format) {
+                    vk::ImageAspectFlags::DEPTH
+                } else {
+                    vk::ImageAspectFlags::COLOR
+                })
                 .base_mip_level(0)
                 .level_count(1)
                 .base_array_layer(0)
@@ -164,6 +178,7 @@ impl Texture {
         if self.view.is_some() {
             return self.view.clone().unwrap();
         }
+
         let view = unsafe {
             device.create_image_view(
                 &vk::ImageViewCreateInfo {
@@ -176,7 +191,11 @@ impl Texture {
                         a: vk::ComponentSwizzle::A,
                     },
                     subresource_range: vk::ImageSubresourceRange {
-                        aspect_mask: vk::ImageAspectFlags::COLOR,
+                        aspect_mask: if Self::is_depth(self.format) {
+                            vk::ImageAspectFlags::DEPTH
+                        } else {
+                            vk::ImageAspectFlags::COLOR
+                        },
                         level_count: 1,
                         layer_count: 1,
                         ..Default::default()
@@ -194,6 +213,9 @@ impl Texture {
     }
 
     pub fn destroy(&mut self, device: &ash::Device, allocator: &mut Allocator) {
+        if std::thread::panicking() {
+            return;
+        }
         if let Some(view) = self.view.take() {
             unsafe { device.destroy_image_view(*view, None) };
         }
@@ -303,6 +325,14 @@ impl Texture {
 
     //     texture
     // }
+
+    pub fn is_depth(format: vk::Format) -> bool {
+        format == vk::Format::D32_SFLOAT
+            || format == vk::Format::D32_SFLOAT_S8_UINT
+            || format == vk::Format::D24_UNORM_S8_UINT
+            || format == vk::Format::D16_UNORM_S8_UINT
+            || format == vk::Format::D16_UNORM
+    }
 
     pub fn bytes_per_texel(&self) -> u32 {
         match self.format {

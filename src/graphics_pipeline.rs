@@ -913,13 +913,13 @@ impl ResourceHooks for GraphicsPipeline {
 }
 
 impl GraphicsPipeline {
-    pub fn new(
-        device: &Device,
-        desc: &GraphicsPipelineDescriptor,
-        shader_info: &ImmutableShaderInfo,
-        swapchain_size: Extent2d,
-        shader_manager: Arc<ResourceManager<Shader>>,
-    ) -> Self {
+    pub fn new(ctx: &RenderContext, desc: &GraphicsPipelineDescriptor) -> Self {
+        let immutable_shader_info = ImmutableShaderInfo {
+            immutable_samplers: ctx.immutable_samplers.clone(),
+            yuv_conversion_samplers: ctx.yuv_immutable_samplers.clone(),
+            max_descriptor_count: ctx.max_descriptor_count,
+        };
+
         let vk_sample_mask = [
             desc.multisample.mask as u32,
             (desc.multisample.mask >> 32) as u32,
@@ -969,7 +969,7 @@ impl GraphicsPipeline {
         let dynamic_state_info =
             vk::PipelineDynamicStateCreateInfo::default().dynamic_states(&dynamic_state);
 
-        let fragment_shader = shader_manager.get(&desc.fragment.shader).unwrap();
+        let fragment_shader = ctx.shader_manager.get(&desc.fragment.shader).unwrap();
 
         let sets_prepended = if let Some(prepend_descriptor_sets) = &desc.prepend_descriptor_sets {
             (0..prepend_descriptor_sets.sets.len() as u32).collect()
@@ -982,34 +982,28 @@ impl GraphicsPipeline {
             .as_ref()
             .map_or(SmallVec::new(), |sets| sets.layouts.clone());
 
-        let mut set_layout_info = desc
-            .prepend_descriptor_sets
-            .as_ref()
-            .map_or(SmallVec::new(), |sets| sets.set_layout_info.clone());
+        let (mut shader_descriptor_set_layouts, set_layout_info) = fragment_shader
+            .create_descriptor_set_layouts(&ctx.device, &immutable_shader_info, &sets_prepended);
 
-        let (mut shader_descriptor_set_layouts, mut shader_set_layout_info) =
-            fragment_shader.create_descriptor_set_layouts(device, shader_info, &sets_prepended);
-
-        let (descriptor_sets, descriptor_pool) = if !shader_set_layout_info.is_empty() {
+        let (descriptor_sets, descriptor_pool) = if !set_layout_info.is_empty() {
             fragment_shader.create_descriptor_sets(
-                device,
-                shader_info,
+                &ctx.device,
+                &immutable_shader_info,
                 &shader_descriptor_set_layouts,
-                &shader_set_layout_info,
+                &set_layout_info,
             )
         } else {
             (vec![], vk::DescriptorPool::null())
         };
 
         descriptor_set_layouts.append(&mut shader_descriptor_set_layouts);
-        set_layout_info.append(&mut shader_set_layout_info);
 
         let push_constant_ranges: Vec<vk::PushConstantRange> = desc
             .push_constant_range
             .map_or(vec![], |range| vec![range.into()]);
 
         let pipeline_layout = unsafe {
-            device
+            ctx.device
                 .create_pipeline_layout(
                     &vk::PipelineLayoutCreateInfo::default()
                         .set_layouts(&descriptor_set_layouts)
@@ -1063,7 +1057,7 @@ impl GraphicsPipeline {
             }
         }
 
-        let vertex_shader = shader_manager.get(&desc.vertex.shader).unwrap();
+        let vertex_shader = ctx.shader_manager.get(&desc.vertex.shader).unwrap();
         let shader_stages = [
             vk::PipelineShaderStageCreateInfo::default()
                 .name(&vertex_shader.entry_point_cstr)
@@ -1079,7 +1073,9 @@ impl GraphicsPipeline {
             .topology(desc.primitive.topology)
             .primitive_restart_enable(false);
 
-        let viewport = desc.viewport.unwrap_or(swapchain_size);
+        let viewport = desc
+            .viewport
+            .unwrap_or(ctx.get_swapchain().surface_resolution.into());
 
         let viewports = smallvec![vk::Viewport {
             x: 0.0,
@@ -1140,7 +1136,7 @@ impl GraphicsPipeline {
             .push_next(&mut rendering_info);
 
         let pipeline = unsafe {
-            device
+            ctx.device
                 .create_graphics_pipelines(
                     vk::PipelineCache::null(),
                     &[graphic_pipeline_info],
@@ -1280,6 +1276,9 @@ impl GraphicsPipeline {
     }
 
     pub fn destroy(&self, device: &Device) {
+        if std::thread::panicking() {
+            return;
+        }
         if self.pipeline == Default::default() {
             return;
         }

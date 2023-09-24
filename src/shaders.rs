@@ -3,6 +3,7 @@ use std::{
     collections::{BTreeMap, HashMap},
     ffi::CString,
     hash::{Hash, Hasher},
+    io::Read,
     path::Path,
     sync::Arc,
 };
@@ -53,14 +54,37 @@ impl From<ShaderOptimization> for OptimizationLevel {
     }
 }
 
+#[derive(Clone, Debug, Hash, PartialEq, Eq)]
+pub enum ShaderSource {
+    Text(Cow<'static, str>),
+    File(Cow<'static, Path>),
+}
+
+impl Default for ShaderSource {
+    fn default() -> Self {
+        Self::Text(Cow::Borrowed(""))
+    }
+}
+
+impl From<&'static str> for ShaderSource {
+    fn from(text: &'static str) -> Self {
+        if text.contains('\n') {
+            Self::Text(Cow::Borrowed(text))
+        } else {
+            Self::File(Cow::Borrowed(Path::new(text)))
+        }
+    }
+}
+
 #[derive(Clone, Debug, Default, Hash, PartialEq, Eq)]
 pub struct ShaderDescriptor {
     pub label: &'static str,
-    pub source: Cow<'static, str>,
+    pub source: ShaderSource,
     pub kind: ShaderKind,
     pub defines: Vec<(String, Option<String>)>,
     pub entry_point: Cow<'static, str>,
     pub optimization: ShaderOptimization,
+    // pub path: Option<Cow<'static, Path>>,
 }
 
 #[derive(Clone, Debug, Default, Eq)]
@@ -441,20 +465,12 @@ impl Shader {
         (set_layouts, set_layout_info)
     }
 
-    pub fn from_source_text(
-        device: &ash::Device,
-        spirv_text: &str,
-        debug_filename: &str,
-        kind: ShaderKind,
-        entry_point: &str,
-        defines: &[(String, Option<String>)],
-        optimization: OptimizationLevel,
-    ) -> Self {
+    pub fn from_source_text(ctx: &crate::ctx::RenderContext, desc: &ShaderDescriptor) -> Self {
         let compiler = shaderc::Compiler::new().unwrap();
         let mut options = shaderc::CompileOptions::new().unwrap();
         options.add_macro_definition("EP", Some("main"));
 
-        for (name, value) in defines {
+        for (name, value) in desc.defines.iter() {
             options.add_macro_definition(
                 name,
                 if let Some(value) = value {
@@ -469,7 +485,7 @@ impl Shader {
             shaderc::TargetEnv::Vulkan,
             shaderc::EnvVersion::Vulkan1_2 as u32,
         );
-        options.set_optimization_level(optimization);
+        options.set_optimization_level(desc.optimization.into());
         options.set_generate_debug_info();
         options.set_include_callback(|name, include_type, source_file, _depth| {
             let path = if include_type == shaderc::IncludeType::Relative {
@@ -490,37 +506,47 @@ impl Shader {
             }
         });
 
+        let source: String = match desc.source {
+            ShaderSource::Text(ref source) => source.to_string(),
+            ShaderSource::File(ref path) => {
+                let mut file = std::fs::File::open(path).unwrap();
+                let mut source = String::new();
+                file.read_to_string(&mut source).unwrap();
+                source
+            }
+        };
+
         let spirv = compiler
             .compile_into_spirv(
-                spirv_text,
-                kind.to_shaderc_kind(),
-                debug_filename,
-                entry_point,
+                &source,
+                desc.kind.to_shaderc_kind(),
+                desc.label,
+                &desc.entry_point,
                 Some(&options),
             )
             .unwrap();
 
-        Self::new(device, spirv, kind, entry_point)
+        Self::new(&ctx.device, spirv, desc.kind, &desc.entry_point)
     }
 
-    pub fn from_file(
-        device: &ash::Device,
-        path: &str,
-        kind: ShaderKind,
-        entry_point: &str,
-        defines: &[(String, Option<String>)],
-        optimization: OptimizationLevel,
-    ) -> Self {
-        Self::from_source_text(
-            device,
-            &std::fs::read_to_string(path).unwrap(),
-            path,
-            kind,
-            entry_point,
-            defines,
-            optimization,
-        )
-    }
+    // pub fn from_file(
+    //     device: &ash::Device,
+    //     path: &str,
+    //     kind: ShaderKind,
+    //     entry_point: &str,
+    //     defines: &[(String, Option<String>)],
+    //     optimization: OptimizationLevel,
+    // ) -> Self {
+    //     Self::from_source_text(
+    //         device,
+    //         &std::fs::read_to_string(path).unwrap(),
+    //         path,
+    //         kind,
+    //         entry_point,
+    //         defines,
+    //         optimization,
+    //     )
+    // }
 }
 
 pub struct ImmutableShaderInfo {

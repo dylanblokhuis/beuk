@@ -6,12 +6,14 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
+aftermath-rs = { version = "0.1.2", optional = true }
 anyhow = "1.0.72"
 ash = { git = "https://github.com/ash-rs/ash.git", features = ["linked"] }
 ash-window = { git = "https://github.com/ash-rs/ash.git" }
 boxcar = "0.2.2"
 gpu-allocator = { git = "https://github.com/dylanblokhuis/gpu-allocator.git", features = ["vulkan", "ash"], rev = "9f1e44b038e8f8bf9529b1fb9df0f182935da16b" }
 log = "0.4.19"
+notify = { version = "6.1.1", optional = true }
 raw-window-handle = "0.5.2"
 rayon = "1.7.0"
 rspirv-reflect = "0.8.0"
@@ -30,6 +32,11 @@ simple_logger = "4.2.0"
 crossbeam-channel = "0.5.8"
 criterion = "0.5.1"
 glam = { version = "0.24.1", features = ["bytemuck"] }
+
+[features]
+dlss = []
+aftermath = ["aftermath-rs"]
+hot-reload = ["notify"]
 
 [[test]]
 name = "beuk_tests"

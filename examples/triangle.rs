@@ -5,6 +5,8 @@ use beuk::ctx::RenderContextDescriptor;
 use beuk::graphics_pipeline::{
     BlendState, FragmentState, GraphicsPipeline, VertexBufferLayout, VertexState,
 };
+#[cfg(feature = "hot-reload")]
+use beuk::hot_reload::ShaderHotReload;
 use beuk::memory::ResourceHandle;
 use beuk::shaders::ShaderDescriptor;
 use beuk::{
@@ -41,6 +43,12 @@ fn main() {
         window_handle: window.raw_window_handle(),
         present_mode: vk::PresentModeKHR::default(),
     }));
+
+    #[cfg(feature = "hot-reload")]
+    let _watcher = ShaderHotReload::new(
+        ctx.clone(),
+        &[std::path::Path::new(r#"./examples/triangle"#).into()],
+    );
 
     let canvas = Canvas::new(&ctx);
 
@@ -130,7 +138,7 @@ impl Canvas {
                     shader: ctx.create_shader(ShaderDescriptor {
                         kind: beuk::shaders::ShaderKind::Vertex,
                         entry_point: "main".into(),
-                        source: include_str!("./triangle/shader.vert").into(),
+                        source: "./examples/triangle/shader.vert".into(),
                         ..Default::default()
                     }),
                     buffers: smallvec![VertexBufferLayout {
@@ -154,7 +162,7 @@ impl Canvas {
                     shader: ctx.create_shader(ShaderDescriptor {
                         kind: beuk::shaders::ShaderKind::Fragment,
                         entry_point: "main".into(),
-                        source: include_str!("./triangle/shader.frag").into(),
+                        source: "./examples/triangle/shader.frag".into(),
                         ..Default::default()
                     }),
                     color_attachment_formats: smallvec![swapchain.surface_format.format],

@@ -7,6 +7,8 @@ use beuk::ctx::RenderContextDescriptor;
 use beuk::graphics_pipeline::{
     BlendState, FragmentState, GraphicsPipeline, VertexBufferLayout, VertexState,
 };
+#[cfg(feature = "hot-reload")]
+use beuk::hot_reload::ShaderHotReload;
 use beuk::memory::ResourceHandle;
 use beuk::shaders::ShaderDescriptor;
 use beuk::texture::Texture;
@@ -44,6 +46,12 @@ fn main() {
         window_handle: window.raw_window_handle(),
         present_mode: vk::PresentModeKHR::default(),
     }));
+
+    #[cfg(feature = "hot-reload")]
+    let _watcher = ShaderHotReload::new(
+        ctx.clone(),
+        &[std::path::Path::new(r#"./examples/triangle"#).into()],
+    );
 
     let canvas = Canvas::new(&ctx);
 
@@ -185,7 +193,7 @@ impl Canvas {
                 shader: ctx.create_shader(ShaderDescriptor {
                     kind: beuk::shaders::ShaderKind::Compute,
                     entry_point: "main".into(),
-                    source: include_str!("./triangle/shader.comp").into(),
+                    source: "./examples/triangle/shader.comp".into(),
                     ..Default::default()
                 }),
                 push_constant_range: None,

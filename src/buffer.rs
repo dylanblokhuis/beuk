@@ -8,6 +8,7 @@ pub type MemoryLocation = gpu_allocator::MemoryLocation;
 
 #[derive(Debug, Default)]
 pub struct Buffer {
+    pub debug_name: &'static str,
     pub buffer: vk::Buffer,
     pub allocation: Option<Allocation>,
     pub size: u64,
@@ -52,7 +53,7 @@ impl Buffer {
     pub fn new(
         device: &ash::Device,
         allocator: &mut Allocator,
-        debug_name: &str,
+        debug_name: &'static str,
         size: vk::DeviceSize,
         usage: vk::BufferUsageFlags,
         location: MemoryLocation,
@@ -74,6 +75,7 @@ impl Buffer {
         .unwrap();
         let requirements = unsafe { device.get_buffer_memory_requirements(buffer) };
 
+        log::debug!("Allocating buffer: {}", debug_name);
         let allocation = allocator
             .allocate(&AllocationCreateDesc {
                 name: debug_name,
@@ -100,6 +102,7 @@ impl Buffer {
         };
 
         Self {
+            debug_name,
             buffer,
             allocation: Some(allocation),
             size,
@@ -112,6 +115,10 @@ impl Buffer {
     }
 
     pub fn destroy(&mut self, device: &ash::Device, allocator: &mut Allocator) {
+        if std::thread::panicking() {
+            return;
+        }
+
         let Some(allocation) = self.allocation.take() else {
             return;
         };
@@ -138,11 +145,17 @@ impl Buffer {
 
     pub fn cast<T>(&self) -> &T {
         let Some(allocation) = self.allocation.as_ref() else {
-            panic!("Tried reading from buffer but buffer not allocated");
+            panic!(
+                "Tried reading from {} but buffer not allocated",
+                self.debug_name
+            );
         };
 
         let Some(ptr) = allocation.mapped_ptr() else {
-            panic!("Tried reading from buffer but buffer not mapped");
+            panic!(
+                "Tried reading from {} but buffer not mapped",
+                self.debug_name
+            );
         };
 
         let non_null_t_ptr: NonNull<T> = unsafe { NonNull::new_unchecked(ptr.as_ptr() as *mut T) };

@@ -64,7 +64,7 @@ pub struct ComputePipeline {
 }
 
 impl ComputePipeline {
-    pub fn new(ctx: &RenderContext, desc: ComputePipelineDescriptor) -> Self {
+    pub fn new(ctx: &RenderContext, desc: &ComputePipelineDescriptor) -> Self {
         let immutable_shader_info = &ImmutableShaderInfo {
             immutable_samplers: ctx.immutable_samplers.clone(),
             yuv_conversion_samplers: ctx.yuv_immutable_samplers.clone(),
@@ -84,27 +84,21 @@ impl ComputePipeline {
             .as_ref()
             .map_or(SmallVec::new(), |sets| sets.layouts.clone());
 
-        let mut set_layout_info = desc
-            .prepend_descriptor_sets
-            .as_ref()
-            .map_or(SmallVec::new(), |sets| sets.set_layout_info.clone());
-
-        let (mut shader_descriptor_set_layouts, mut shader_set_layout_info) = shader
+        let (mut shader_descriptor_set_layouts, mut set_layout_info) = shader
             .create_descriptor_set_layouts(&ctx.device, immutable_shader_info, &sets_prepended);
 
-        let (descriptor_sets, descriptor_pool) = if !shader_set_layout_info.is_empty() {
+        let (descriptor_sets, descriptor_pool) = if !set_layout_info.is_empty() {
             shader.create_descriptor_sets(
                 &ctx.device,
                 immutable_shader_info,
                 &shader_descriptor_set_layouts,
-                &shader_set_layout_info,
+                &set_layout_info,
             )
         } else {
             (vec![], vk::DescriptorPool::null())
         };
 
         descriptor_set_layouts.append(&mut shader_descriptor_set_layouts);
-        set_layout_info.append(&mut shader_set_layout_info);
 
         let push_constant_ranges: SmallVec<[vk::PushConstantRange; 1]> = desc
             .push_constant_range
@@ -143,7 +137,7 @@ impl ComputePipeline {
             descriptor_sets,
             descriptor_pool,
             descriptor_set_layouts,
-            prepended_descriptor_sets: desc.prepend_descriptor_sets,
+            prepended_descriptor_sets: desc.prepend_descriptor_sets.clone(),
             ..Default::default()
         }
     }
@@ -258,6 +252,9 @@ impl ComputePipeline {
         }
     }
     pub fn destroy(&mut self, device: &ash::Device) {
+        if std::thread::panicking() {
+            return;
+        }
         if self.pipeline == Default::default() {
             return;
         }

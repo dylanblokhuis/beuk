@@ -3,6 +3,8 @@ mod chunky_list;
 pub mod compute_pipeline;
 pub mod ctx;
 pub mod graphics_pipeline;
+#[cfg(feature = "hot-reload")]
+pub mod hot_reload;
 pub mod memory;
 pub mod shaders;
 pub mod texture;

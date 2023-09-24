@@ -1,3 +1,5 @@
+#[cfg(feature = "aftermath")]
+use aftermath_rs::Aftermath;
 #[cfg(any(target_os = "macos", target_os = "ios"))]
 use ash::vk::{
     KhrGetMemoryRequirements2Fn, KhrGetPhysicalDeviceProperties2Fn, KhrPortabilityEnumerationFn,
@@ -39,7 +41,7 @@ use crate::{
     compute_pipeline::{ComputePipeline, ComputePipelineDescriptor},
     graphics_pipeline::{Extent3d, GraphicsPipeline, GraphicsPipelineDescriptor},
     memory::{ResourceHandle, ResourceManager},
-    shaders::{ImmutableShaderInfo, Shader, ShaderDescriptor},
+    shaders::{Shader, ShaderDescriptor},
     texture::{Texture, TransitionDesc},
 };
 
@@ -51,6 +53,10 @@ unsafe extern "system" fn vulkan_debug_callback(
     p_callback_data: *const vk::DebugUtilsMessengerCallbackDataEXT,
     _user_data: *mut std::os::raw::c_void,
 ) -> vk::Bool32 {
+    if std::thread::panicking() {
+        return vk::FALSE;
+    }
+
     let callback_data = *p_callback_data;
 
     let message = if callback_data.p_message.is_null() {
@@ -127,10 +133,8 @@ pub struct RenderSwapchain {
     pub present_mode: vk::PresentModeKHR,
     pub present_images: Vec<vk::Image>,
     pub present_image_views: Vec<vk::ImageView>,
-    pub depth_image: vk::Image,
-    pub depth_image_view: vk::ImageView,
-    pub depth_image_memory: vk::DeviceMemory,
     pub depth_image_format: vk::Format,
+    pub depth_image_handle: ResourceHandle<Texture>,
     pub surface_format: vk::SurfaceFormatKHR,
     pub surface_resolution: vk::Extent2D,
 }
@@ -156,6 +160,8 @@ pub struct RenderContext {
     pub shader_mapping: Arc<RwLock<HashMap<Arc<ShaderDescriptor>, ResourceHandle<Shader>>>>,
     pub graphics_pipeline_mapping:
         Arc<RwLock<HashMap<Arc<GraphicsPipelineDescriptor>, ResourceHandle<GraphicsPipeline>>>>,
+    pub compute_pipeline_mapping:
+        Arc<RwLock<HashMap<Arc<ComputePipelineDescriptor>, ResourceHandle<ComputePipeline>>>>,
 
     pub yuv_immutable_samplers:
         Arc<HashMap<(vk::Format, SamplerDesc), (vk::SamplerYcbcrConversion, vk::Sampler)>>,
@@ -186,17 +192,38 @@ pub struct RenderContext {
     pub present_complete_semaphore: vk::Semaphore,
     pub rendering_complete_semaphore: vk::Semaphore,
     pub is_resizing: AtomicBool,
+    #[cfg(feature = "aftermath")]
+    pub aftermath_guard: Aftermath,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 pub struct RenderContextDescriptor {
     pub display_handle: raw_window_handle::RawDisplayHandle,
     pub window_handle: raw_window_handle::RawWindowHandle,
     pub present_mode: PresentModeKHR,
 }
 
+#[cfg(feature = "aftermath")]
+struct Delegate;
+#[cfg(feature = "aftermath")]
+impl aftermath_rs::AftermathDelegate for Delegate {
+    fn dumped(&mut self, dump_data: &[u8]) {
+        // Write `dump_data` to file, or send to telemetry server
+        let path = PathBuf::from("app.nv-gpudmp");
+        std::fs::write(path, dump_data).unwrap();
+    }
+    fn shader_debug_info(&mut self, dump_data: &[u8]) {
+        let path = PathBuf::from("app-shaders.nv-gpudmp");
+        std::fs::write(path, dump_data).unwrap();
+    }
+
+    fn description(&mut self, describe: &mut aftermath_rs::DescriptionBuilder) {}
+}
+
 impl RenderContext {
     pub fn new(desc: RenderContextDescriptor) -> Self {
+        #[cfg(feature = "aftermath")]
+        let aftermath_guard = aftermath_rs::Aftermath::new(Delegate);
         unsafe {
             let entry = Entry::linked();
             let app_name = CStr::from_bytes_with_nul_unchecked(b"beuk\0");
@@ -315,6 +342,16 @@ impl RenderContext {
                 KhrRayQueryFn::NAME.as_ptr(),
                 AccelerationStructure::NAME.as_ptr(),
                 DeferredHostOperations::NAME.as_ptr(),
+                #[cfg(feature = "dlss")]
+                {
+                    b"VK_NVX_binary_import\0".as_ptr() as *const i8
+                },
+                #[cfg(feature = "dlss")]
+                {
+                    b"VK_KHR_push_descriptor\0".as_ptr() as *const i8
+                },
+                #[cfg(feature = "dlss")]
+                vk::NvxImageViewHandleFn::NAME.as_ptr(),
                 #[cfg(any(target_os = "macos", target_os = "ios"))]
                 KhrPortabilitySubsetFn::NAME.as_ptr(),
                 #[cfg(any(target_os = "macos", target_os = "ios"))]
@@ -394,15 +431,6 @@ impl RenderContext {
                 .unwrap();
             let main_command_buffer = command_buffers[0];
 
-            let render_swapchain = Self::create_swapchain(
-                &instance,
-                &device,
-                pdevice,
-                &surface_loader,
-                surface,
-                desc.present_mode,
-            );
-
             let main_commands_reuse_fence = device
                 .create_fence(
                     &vk::FenceCreateInfo::default().flags(vk::FenceCreateFlags::SIGNALED),
@@ -440,7 +468,8 @@ impl RenderContext {
             let command_thread_pool = Arc::new(command_thread_pool);
 
             let buffer_manager = ResourceManager::new(device.clone(), allocator.clone(), 52);
-            let texture_manager = ResourceManager::new(device.clone(), allocator.clone(), 52);
+            let texture_manager =
+                Arc::new(ResourceManager::new(device.clone(), allocator.clone(), 52));
             let graphics_pipelines = ResourceManager::new(device.clone(), allocator.clone(), 32);
             let compute_pipelines = ResourceManager::new(device.clone(), allocator.clone(), 32);
             let shader_manager = ResourceManager::new(device.clone(), allocator.clone(), 32 * 2);
@@ -448,6 +477,17 @@ impl RenderContext {
             let present_queue = Arc::new(Mutex::new(present_queue));
             let thread_id = std::thread::current().id();
             let as_extension = AccelerationStructure::new(&instance, &device);
+
+            let render_swapchain = Self::create_swapchain(
+                &instance,
+                &device,
+                pdevice,
+                &surface_loader,
+                surface,
+                desc.present_mode,
+                texture_manager.clone(),
+                allocator.clone(),
+            );
 
             Self {
                 allocator,
@@ -462,13 +502,14 @@ impl RenderContext {
                 threaded_command_buffers,
                 render_swapchain: Arc::new(RwLock::new(render_swapchain)),
                 buffer_manager: Arc::new(buffer_manager),
-                texture_manager: Arc::new(texture_manager),
+                texture_manager,
                 graphics_pipelines: Arc::new(graphics_pipelines),
                 compute_pipelines: Arc::new(compute_pipelines),
                 shader_manager: Arc::new(shader_manager),
                 immutable_samplers: Arc::new(create_immutable_samplers(&device)),
                 yuv_immutable_samplers: Arc::new(create_immutable_yuv_samplers(&device)),
                 shader_mapping: Arc::new(RwLock::new(HashMap::default())),
+                compute_pipeline_mapping: Arc::new(RwLock::new(HashMap::default())),
                 thread_id,
                 // TODO: fetch from device
                 max_descriptor_count: {
@@ -496,6 +537,8 @@ impl RenderContext {
                 debug_utils_loader,
                 is_resizing: AtomicBool::new(false),
                 graphics_pipeline_mapping: Arc::new(RwLock::new(HashMap::default())),
+                #[cfg(feature = "aftermath")]
+                aftermath_guard,
             }
         }
     }
@@ -507,6 +550,8 @@ impl RenderContext {
         surface_loader: &Surface,
         surface: SurfaceKHR,
         present_mode: PresentModeKHR,
+        texture_manager: Arc<ResourceManager<Texture>>,
+        allocator: Arc<Mutex<Allocator>>,
     ) -> RenderSwapchain {
         unsafe {
             let swapchain_loader = Swapchain::new(instance, device);
@@ -578,65 +623,34 @@ impl RenderContext {
                 })
                 .collect();
 
-            let device_memory_properties = instance.get_physical_device_memory_properties(pdevice);
-            let depth_image_create_info = vk::ImageCreateInfo::default()
-                .image_type(vk::ImageType::TYPE_2D)
-                .format(vk::Format::D16_UNORM)
-                .extent(surface_resolution.into())
-                .mip_levels(1)
-                .array_layers(1)
-                .samples(vk::SampleCountFlags::TYPE_1)
-                .tiling(vk::ImageTiling::OPTIMAL)
-                .usage(vk::ImageUsageFlags::DEPTH_STENCIL_ATTACHMENT)
-                .sharing_mode(vk::SharingMode::EXCLUSIVE);
+            let depth_image_format = vk::Format::D32_SFLOAT;
+            let texture = Texture::new(
+                device,
+                &mut allocator.lock().unwrap(),
+                "depth",
+                &vk::ImageCreateInfo::default()
+                    .image_type(vk::ImageType::TYPE_2D)
+                    .format(depth_image_format)
+                    .extent(surface_resolution.into())
+                    .mip_levels(1)
+                    .array_layers(1)
+                    .samples(vk::SampleCountFlags::TYPE_1)
+                    .tiling(vk::ImageTiling::OPTIMAL)
+                    .usage(vk::ImageUsageFlags::DEPTH_STENCIL_ATTACHMENT)
+                    .sharing_mode(vk::SharingMode::EXCLUSIVE),
+                true,
+            );
 
-            let depth_image = device.create_image(&depth_image_create_info, None).unwrap();
-            let depth_image_memory_req = device.get_image_memory_requirements(depth_image);
-            let depth_image_memory_index = find_memorytype_index(
-                &depth_image_memory_req,
-                &device_memory_properties,
-                vk::MemoryPropertyFlags::DEVICE_LOCAL,
-            )
-            .expect("Unable to find suitable memory index for depth image.");
-
-            let depth_image_allocate_info = vk::MemoryAllocateInfo::default()
-                .allocation_size(depth_image_memory_req.size)
-                .memory_type_index(depth_image_memory_index);
-
-            let depth_image_memory = device
-                .allocate_memory(&depth_image_allocate_info, None)
-                .unwrap();
-
-            device
-                .bind_image_memory(depth_image, depth_image_memory, 0)
-                .expect("Unable to bind depth image memory");
-
-            // transition depth?
-
-            let depth_image_view_info = vk::ImageViewCreateInfo::default()
-                .subresource_range(
-                    vk::ImageSubresourceRange::default()
-                        .aspect_mask(vk::ImageAspectFlags::DEPTH)
-                        .level_count(1)
-                        .layer_count(1),
-                )
-                .image(depth_image)
-                .format(depth_image_create_info.format)
-                .view_type(vk::ImageViewType::TYPE_2D);
-
-            let depth_image_view = device
-                .create_image_view(&depth_image_view_info, None)
-                .unwrap();
+            let handle = texture_manager.create("depth", texture);
+            let depth_image_handle = ResourceHandle::new(handle, texture_manager.clone());
 
             RenderSwapchain {
                 swapchain,
                 swapchain_loader,
                 present_images,
                 present_image_views,
-                depth_image,
-                depth_image_view,
-                depth_image_memory,
-                depth_image_format: depth_image_create_info.format,
+                depth_image_handle,
+                depth_image_format,
                 surface_format,
                 surface_resolution,
                 present_mode,
@@ -647,12 +661,12 @@ impl RenderContext {
     pub fn cleanup_swapchain(&self) {
         unsafe {
             let render_swapchain = self.get_swapchain();
-            self.device
-                .destroy_image_view(render_swapchain.depth_image_view, None);
-            self.device
-                .free_memory(render_swapchain.depth_image_memory, None);
-            self.device
-                .destroy_image(render_swapchain.depth_image, None);
+            // self.device
+            //     .destroy_image_view(render_swapchain.depth_image_view, None);
+            // self.device
+            //     .free_memory(render_swapchain.depth_image_memory, None);
+            // self.device
+            //     .destroy_image(render_swapchain.depth_image, None);
 
             for &image_view in render_swapchain.present_image_views.iter() {
                 self.device.destroy_image_view(image_view, None);
@@ -708,6 +722,8 @@ impl RenderContext {
                     &self.surface_loader,
                     self.surface,
                     present_mode,
+                    self.texture_manager.clone(),
+                    self.allocator.clone(),
                 )
             };
             let new_surface_resolution = render_swapchain.surface_resolution;
@@ -783,7 +799,8 @@ impl RenderContext {
                 .command_buffers(std::slice::from_ref(&command_buffer.command_buffer));
             self.device
                 .queue_submit(*queue, &[submit_info], command_buffer.fence)
-                .expect("queue submit failed.");
+                .map_err(Self::handle_error)
+                .unwrap();
             self.device
                 .wait_for_fences(&[command_buffer.fence], true, std::u64::MAX)
                 .unwrap();
@@ -845,6 +862,19 @@ impl RenderContext {
         }
     }
 
+    fn handle_error(error: vk::Result) -> vk::Result {
+        #[cfg(feature = "aftermath")]
+        {
+            let status =
+                aftermath_rs::Status::wait_for_status(Some(std::time::Duration::from_secs(5)));
+            if status != aftermath_rs::Status::Finished {
+                panic!("Unexpected crash dump status: {:?}", status);
+            }
+        }
+
+        std::process::exit(1);
+    }
+
     pub fn acquire_present_index(&self) -> u32 {
         unsafe {
             while self.is_resizing.load(Ordering::Relaxed) {
@@ -901,9 +931,11 @@ impl RenderContext {
             );
 
             let present_image_view = render_swapchain.present_image_views[present_index as usize];
-            let depth_image_view = render_swapchain.depth_image_view;
+            let depth_image_view = self
+                .get_texture_view(&render_swapchain.depth_image_handle)
+                .unwrap();
 
-            f(command_buffer, present_image_view, depth_image_view);
+            f(command_buffer, present_image_view, *depth_image_view);
 
             let layout_transition_barriers = vk::ImageMemoryBarrier::default()
                 .image(render_swapchain.present_images[present_index as usize])
@@ -1190,7 +1222,7 @@ impl RenderContext {
         if desc.location == MemoryLocation::GpuOnly {
             desc.usage |= vk::BufferUsageFlags::TRANSFER_DST;
         }
-        if desc.size == Default::default() {
+        if desc.size == 0 {
             desc.size = size_of_val(data) as DeviceSize;
         }
 
@@ -1323,17 +1355,10 @@ impl RenderContext {
         log::debug!("Creating shader");
 
         let shader_desc = Arc::new(desc);
+
         let id = self.shader_manager.create(
             shader_desc.label,
-            Shader::from_source_text(
-                &self.device,
-                &shader_desc.source,
-                &shader_desc.label,
-                shader_desc.kind,
-                &shader_desc.entry_point,
-                &shader_desc.defines,
-                shader_desc.optimization.into(),
-            ),
+            Shader::from_source_text(self, &shader_desc),
         );
         let handle = ResourceHandle::new(id, self.shader_manager.clone());
         self.shader_mapping
@@ -1354,21 +1379,10 @@ impl RenderContext {
             log::debug!("Graphics pipeline already exists, returning existing handle.");
             return handle.clone();
         }
-
         log::debug!("Creating graphics pipeline");
 
         let pipeline_desc = Arc::new(desc);
-        let pipeline = GraphicsPipeline::new(
-            &self.device,
-            &pipeline_desc,
-            &ImmutableShaderInfo {
-                immutable_samplers: self.immutable_samplers.clone(),
-                yuv_conversion_samplers: self.yuv_immutable_samplers.clone(),
-                max_descriptor_count: self.max_descriptor_count,
-            },
-            self.get_swapchain().surface_resolution.into(),
-            self.shader_manager.clone(),
-        );
+        let pipeline = GraphicsPipeline::new(self, &pipeline_desc);
         let id = self.graphics_pipelines.create(label, pipeline);
         let handle = ResourceHandle::new(id, self.graphics_pipelines.clone());
         let mut mapping = self.graphics_pipeline_mapping.write().unwrap();
@@ -1381,9 +1395,20 @@ impl RenderContext {
         label: &'static str,
         desc: ComputePipelineDescriptor,
     ) -> ResourceHandle<ComputePipeline> {
-        let pipeline = ComputePipeline::new(self, desc);
+        log::debug!("Compute pipeline hash: {}", get_hash(&desc));
+        if let Some(handle) = self.compute_pipeline_mapping.read().unwrap().get(&desc) {
+            log::debug!("Compute pipeline already exists, returning existing handle.");
+            return handle.clone();
+        }
+        log::debug!("Creating compute pipeline");
+
+        let pipeline_desc = Arc::new(desc);
+        let pipeline = ComputePipeline::new(self, &pipeline_desc);
         let id = self.compute_pipelines.create(label, pipeline);
-        ResourceHandle::new(id, self.compute_pipelines.clone())
+        let handle = ResourceHandle::new(id, self.compute_pipelines.clone());
+        let mut mapping = self.compute_pipeline_mapping.write().unwrap();
+        mapping.insert(pipeline_desc, handle.clone());
+        handle
     }
 
     /// Returns a read lock to the render swapchain.
@@ -1395,6 +1420,10 @@ impl RenderContext {
 impl Drop for RenderContext {
     fn drop(&mut self) {
         unsafe {
+            if std::thread::panicking() {
+                return;
+            }
+
             self.device.device_wait_idle().unwrap();
 
             self.device
@@ -1465,7 +1494,7 @@ fn create_immutable_samplers(device: &ash::Device) -> HashMap<SamplerDesc, vk::S
     for &texel_filter in &texel_filters {
         for &mipmap_mode in &mipmap_modes {
             for &address_modes in &address_modes {
-                // let anisotropy_enable = texel_filter == vk::Filter::LINEAR;
+                let anisotropy_enable = texel_filter == vk::Filter::LINEAR;
 
                 result.insert(
                     SamplerDesc {
@@ -1481,7 +1510,10 @@ fn create_immutable_samplers(device: &ash::Device) -> HashMap<SamplerDesc, vk::S
                                 .mipmap_mode(mipmap_mode)
                                 .address_mode_u(address_modes)
                                 .address_mode_v(address_modes)
-                                .address_mode_w(address_modes),
+                                .address_mode_w(address_modes)
+                                .max_lod(vk::LOD_CLAMP_NONE)
+                                .max_anisotropy(16.0)
+                                .anisotropy_enable(anisotropy_enable),
                             None,
                         )
                     }
