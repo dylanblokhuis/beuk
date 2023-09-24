@@ -37,6 +37,7 @@ glam = { version = "0.24.1", features = ["bytemuck"] }
 dlss = []
 aftermath = ["aftermath-rs"]
 hot-reload = ["notify"]
+rt = []
 
 [[test]]
 name = "beuk_tests"

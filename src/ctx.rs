@@ -8,13 +8,11 @@ use ash::vk::{
 use ash::{
     extensions::{
         ext::{BufferDeviceAddress, DebugUtils},
-        khr::{
-            AccelerationStructure, DeferredHostOperations, DynamicRendering, Surface, Swapchain,
-        },
+        khr::{DynamicRendering, Surface, Swapchain},
     },
     vk::{
         DebugUtilsMessageSeverityFlagsEXT, DeviceSize, ExtDescriptorIndexingFn,
-        ImageSubresourceLayers, ImageView, KhrRayQueryFn, KhrSamplerYcbcrConversionFn,
+        ImageSubresourceLayers, ImageView, KhrSamplerYcbcrConversionFn,
         PhysicalDeviceBufferDeviceAddressFeaturesKHR, PhysicalDeviceDescriptorIndexingFeatures,
         PhysicalDeviceRayQueryFeaturesKHR, PhysicalDeviceSamplerYcbcrConversionFeatures,
         PresentModeKHR, SurfaceKHR, API_VERSION_1_2,
@@ -44,8 +42,6 @@ use crate::{
     shaders::{Shader, ShaderDescriptor},
     texture::{Texture, TransitionDesc},
 };
-
-pub const RESERVED_DESCRIPTOR_COUNT: u32 = 32;
 
 unsafe extern "system" fn vulkan_debug_callback(
     message_severity: vk::DebugUtilsMessageSeverityFlagsEXT,
@@ -147,6 +143,7 @@ thread_local! {
 pub struct CommandBuffer {
     pub command_buffer: vk::CommandBuffer,
     pub fence: vk::Fence,
+    #[allow(dead_code)]
     device: Arc<Device>,
 }
 
@@ -182,7 +179,8 @@ pub struct RenderContext {
     pub pdevice: vk::PhysicalDevice,
     pub queue_family_index: u32,
     pub present_queue: Arc<Mutex<vk::Queue>>,
-    pub as_extension: AccelerationStructure,
+    #[cfg(feature = "rt")]
+    pub as_extension: ash::extensions::khr::AccelerationStructure,
 
     pub surface: vk::SurfaceKHR,
 
@@ -339,9 +337,6 @@ impl RenderContext {
                 ExtDescriptorIndexingFn::NAME.as_ptr(),
                 BufferDeviceAddress::NAME.as_ptr(),
                 KhrSamplerYcbcrConversionFn::NAME.as_ptr(),
-                KhrRayQueryFn::NAME.as_ptr(),
-                AccelerationStructure::NAME.as_ptr(),
-                DeferredHostOperations::NAME.as_ptr(),
                 #[cfg(feature = "dlss")]
                 {
                     b"VK_NVX_binary_import\0".as_ptr() as *const i8
@@ -352,6 +347,12 @@ impl RenderContext {
                 },
                 #[cfg(feature = "dlss")]
                 vk::NvxImageViewHandleFn::NAME.as_ptr(),
+                #[cfg(feature = "rt")]
+                ash::vk::KhrRayQueryFn::NAME.as_ptr(),
+                #[cfg(feature = "rt")]
+                ash::extensions::khr::AccelerationStructure::NAME.as_ptr(),
+                #[cfg(feature = "rt")]
+                ash::extensions::khr::DeferredHostOperations::NAME.as_ptr(),
                 #[cfg(any(target_os = "macos", target_os = "ios"))]
                 KhrPortabilitySubsetFn::NAME.as_ptr(),
                 #[cfg(any(target_os = "macos", target_os = "ios"))]
@@ -476,7 +477,9 @@ impl RenderContext {
 
             let present_queue = Arc::new(Mutex::new(present_queue));
             let thread_id = std::thread::current().id();
-            let as_extension = AccelerationStructure::new(&instance, &device);
+
+            #[cfg(feature = "rt")]
+            let as_extension = ash::extensions::khr::AccelerationStructure::new(&instance, &device);
 
             let render_swapchain = Self::create_swapchain(
                 &instance,
@@ -493,6 +496,7 @@ impl RenderContext {
                 allocator,
                 entry,
                 instance,
+                #[cfg(feature = "rt")]
                 as_extension,
                 device: device.clone(),
                 dynamic_rendering,
@@ -516,8 +520,7 @@ impl RenderContext {
                     (512 * 1024).min(
                         device_properties
                             .limits
-                            .max_per_stage_descriptor_sampled_images
-                            - RESERVED_DESCRIPTOR_COUNT,
+                            .max_per_stage_descriptor_sampled_images,
                     )
                 },
                 surface_loader,
@@ -1128,7 +1131,7 @@ impl RenderContext {
             &TransitionDesc {
                 new_layout: vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
                 new_access_mask: vk::AccessFlags::SHADER_READ,
-                new_stage_mask: vk::PipelineStageFlags::FRAGMENT_SHADER,
+                ..Default::default()
             },
         );
     }
