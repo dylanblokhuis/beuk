@@ -1131,9 +1131,49 @@ impl RenderContext {
             &TransitionDesc {
                 new_layout: vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
                 new_access_mask: vk::AccessFlags::SHADER_READ,
+                new_stage_mask: vk::PipelineStageFlags::ALL_COMMANDS,
                 ..Default::default()
             },
         );
+    }
+
+    pub fn copy_texture_to_buffer(
+        &self,
+        command_buffer: vk::CommandBuffer,
+        texture: &ResourceHandle<Texture>,
+        buffer: &ResourceHandle<Buffer>,
+        offset: u64,
+    ) {
+        let mut texture = self.texture_manager.get_mut(texture).unwrap();
+        texture.transition(
+            &self.device,
+            command_buffer,
+            &TransitionDesc {
+                new_layout: vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
+                new_access_mask: vk::AccessFlags::TRANSFER_READ,
+                new_stage_mask: vk::PipelineStageFlags::TRANSFER,
+            },
+        );
+
+        unsafe {
+            self.device.cmd_copy_image_to_buffer(
+                command_buffer,
+                texture.image,
+                texture.layout,
+                self.buffer_manager.get(buffer).unwrap().buffer(),
+                &[vk::BufferImageCopy::default()
+                    .buffer_offset(offset)
+                    .buffer_row_length(texture.extent.width)
+                    .buffer_image_height(0)
+                    .image_subresource(vk::ImageSubresourceLayers {
+                        aspect_mask: vk::ImageAspectFlags::COLOR,
+                        mip_level: 0,
+                        base_array_layer: 0,
+                        layer_count: 1,
+                    })
+                    .image_extent(texture.extent)],
+            );
+        }
     }
 
     pub fn copy_texture_to_texture(
