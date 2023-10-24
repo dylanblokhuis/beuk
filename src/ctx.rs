@@ -228,7 +228,18 @@ impl RenderContext {
 
             let mut layer_names = vec![];
 
-            if cfg!(debug_assertions) {
+            let layer_properties = entry.enumerate_instance_layer_properties().unwrap();
+            let mut can_use_validation = false;
+            for layer in layer_properties.iter() {
+                let layer_name = CStr::from_ptr(layer.layer_name.as_ptr());
+                if layer_name
+                    == CStr::from_bytes_with_nul_unchecked(b"VK_LAYER_KHRONOS_validation\0")
+                {
+                    can_use_validation = true;
+                }
+            }
+
+            if cfg!(debug_assertions) && can_use_validation {
                 layer_names.push(CStr::from_bytes_with_nul_unchecked(
                     b"VK_LAYER_KHRONOS_validation\0",
                 ))
