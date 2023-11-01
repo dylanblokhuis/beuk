@@ -81,6 +81,16 @@ impl<T: Default + Debug + ResourceHooks> ResourceHandle<T> {
     pub fn id(&self) -> ResourceId {
         self.id
     }
+
+    #[inline]
+    pub fn get(&self) -> MutexGuard<Resource<T>> {
+        self.manager.get(self).unwrap()
+    }
+
+    #[inline]
+    pub fn get_mut(&self) -> MutexGuard<Resource<T>> {
+        self.manager.get_mut(self).unwrap()
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
