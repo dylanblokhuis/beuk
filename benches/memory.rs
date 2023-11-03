@@ -13,7 +13,6 @@ use gpu_allocator::vulkan::Allocator;
 use raw_window_handle::{HasRawDisplayHandle, HasRawWindowHandle};
 
 
-
 #[repr(C, align(16))]
 #[derive(Debug, Default, Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
 struct Test {
