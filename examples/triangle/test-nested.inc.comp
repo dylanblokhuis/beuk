@@ -1,0 +1,3 @@
+vec3 nested_import() {
+    return vec3(1.0);
+}

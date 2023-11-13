@@ -6,7 +6,7 @@ use std::{
     hash::{Hash, Hasher},
     io::Read,
     path::Path,
-    sync::Arc,
+    sync::{Arc, Mutex},
 };
 
 use ash::vk::{self, Filter, SamplerAddressMode, SamplerMipmapMode};
@@ -505,10 +505,10 @@ impl Shader {
                 Ok(glsl_code) => {
                     #[cfg(feature = "hot-reload")]
                     if let ShaderSource::File(shader_file_to_reload) = &desc.source {
-                        crate::hot_reload::INCLUDED_SHADERS.lock().unwrap().insert(
+                        crate::hot_reload::INCLUDED_SHADERS.lock().unwrap().insert((
                             path.canonicalize().unwrap(),
-                            shader_file_to_reload.to_path_buf(),
-                        );
+                            shader_file_to_reload.to_path_buf().canonicalize().unwrap(),
+                        ));
                     }
 
                     Ok(shaderc::ResolvedInclude {

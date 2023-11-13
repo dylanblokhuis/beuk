@@ -8,7 +8,7 @@ use crate::{
     shaders::{Shader, ShaderDescriptor, ShaderSource},
 };
 use std::{
-    collections::HashMap,
+    collections::HashSet,
     path::PathBuf,
     sync::Arc,
     time::{Duration, SystemTime, UNIX_EPOCH},
@@ -19,8 +19,8 @@ pub struct ShaderHotReload {
 }
 
 lazy_static! {
-    pub static ref INCLUDED_SHADERS: std::sync::Mutex<HashMap<PathBuf, PathBuf>> =
-        std::sync::Mutex::new(HashMap::new());
+    pub static ref INCLUDED_SHADERS: std::sync::Mutex<HashSet<(PathBuf, PathBuf)>> =
+        std::sync::Mutex::new(HashSet::new());
 }
 
 impl ShaderHotReload {
@@ -56,19 +56,21 @@ impl ShaderHotReload {
                                     std::fs::canonicalize(shader_desc_path).unwrap();
                                 let path_absolute = std::fs::canonicalize(path).unwrap();
 
-                                let lock = INCLUDED_SHADERS.lock().unwrap();
-                                let maybe_included_shader = lock.get(&path_absolute);
-
-                                if let Some(source_file) = maybe_included_shader {
-                                    let absolute_source_file =
-                                        std::fs::canonicalize(source_file).unwrap();
-
-                                    if shader_desc_path_absolute == absolute_source_file {
-                                        return true;
-                                    }
+                                // is the shader we're reloading the source?
+                                if shader_desc_path_absolute == path_absolute {
+                                    return true;
                                 }
 
-                                shader_desc_path_absolute == path_absolute
+                                // is the shader that changed included in a source shader?
+                                let lock = INCLUDED_SHADERS.lock().unwrap();
+                                let maybe_included_shader =
+                                    lock.get(&(path_absolute, shader_desc_path_absolute));
+
+                                if maybe_included_shader.is_some() {
+                                    return true;
+                                }
+
+                                false
                             } else {
                                 false
                             }
