@@ -1,6 +1,7 @@
 use std::{
     borrow::Cow,
     collections::{BTreeMap, HashMap},
+    env::current_dir,
     ffi::CString,
     hash::{Hash, Hasher},
     io::Read,
@@ -487,18 +488,34 @@ impl Shader {
         );
         options.set_optimization_level(desc.optimization.into());
         options.set_generate_debug_info();
+
         options.set_include_callback(|name, include_type, source_file, _depth| {
+            let shader_include_dir: std::path::PathBuf = match desc.source {
+                ShaderSource::Text(_) => current_dir().unwrap(),
+                ShaderSource::File(ref path) => path.parent().unwrap().to_path_buf(),
+            };
+
             let path = if include_type == shaderc::IncludeType::Relative {
                 Path::new(Path::new(source_file).parent().unwrap()).join(name)
             } else {
-                Path::new("shader").join(name)
+                Path::new(&shader_include_dir).join(name)
             };
 
             match std::fs::read_to_string(&path) {
-                Ok(glsl_code) => Ok(shaderc::ResolvedInclude {
-                    resolved_name: String::from(name),
-                    content: glsl_code,
-                }),
+                Ok(glsl_code) => {
+                    #[cfg(feature = "hot-reload")]
+                    if let ShaderSource::File(shader_file_to_reload) = &desc.source {
+                        crate::hot_reload::INCLUDED_SHADERS.lock().unwrap().insert(
+                            path.canonicalize().unwrap(),
+                            shader_file_to_reload.to_path_buf(),
+                        );
+                    }
+
+                    Ok(shaderc::ResolvedInclude {
+                        resolved_name: String::from(name),
+                        content: glsl_code,
+                    })
+                }
                 Err(err) => Err(format!(
                     "Failed to resolve include to {} in {} (was looking for {:?}): {}",
                     name, source_file, path, err

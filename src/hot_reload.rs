@@ -1,3 +1,4 @@
+use lazy_static::lazy_static;
 use notify::{RecursiveMode, Watcher};
 
 use crate::{
@@ -7,12 +8,19 @@ use crate::{
     shaders::{Shader, ShaderDescriptor, ShaderSource},
 };
 use std::{
+    collections::HashMap,
+    path::PathBuf,
     sync::Arc,
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 pub struct ShaderHotReload {
     pub watcher: notify::PollWatcher,
+}
+
+lazy_static! {
+    pub static ref INCLUDED_SHADERS: std::sync::Mutex<HashMap<PathBuf, PathBuf>> =
+        std::sync::Mutex::new(HashMap::new());
 }
 
 impl ShaderHotReload {
@@ -48,31 +56,31 @@ impl ShaderHotReload {
                                     std::fs::canonicalize(shader_desc_path).unwrap();
                                 let path_absolute = std::fs::canonicalize(path).unwrap();
 
-                                println!(
-                                    "shader_desc_path_absolute: {:?}, path_absolute: {:?}, {}",
-                                    shader_desc_path_absolute,
-                                    path_absolute,
-                                    shader_desc_path_absolute == path_absolute
-                                );
+                                let lock = INCLUDED_SHADERS.lock().unwrap();
+                                let maybe_included_shader = lock.get(&path_absolute);
+
+                                if let Some(source_file) = maybe_included_shader {
+                                    let absolute_source_file =
+                                        std::fs::canonicalize(source_file).unwrap();
+
+                                    if shader_desc_path_absolute == absolute_source_file {
+                                        return true;
+                                    }
+                                }
 
                                 shader_desc_path_absolute == path_absolute
                             } else {
-                                // log::error!(
-                                //     "[Hot-reload] Tried to hot reload a shader that wasn't loaded from a file"
-                                // );
                                 false
                             }
                         }) else {
-                            log::error!("[Hot-reload] No shader found for path: {}", path);
+                            log::error!("No shader found for path: {}", path);
                             continue;
                         };
-
-                        println!("here!!!: {:?}", shader_desc);
 
                         let shader_desc = shader_desc.clone();
                         let ShaderSource::File(shader_desc_path) = &shader_desc.source else {
                             log::error!(
-                                "[Hot-reload] Tried to hot reload a shader that wasn't loaded from a file"
+                                "Tried to hot reload a shader that wasn't loaded from a file"
                             );
                             continue;
                         };

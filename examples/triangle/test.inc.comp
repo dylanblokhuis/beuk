@@ -1,0 +1,3 @@
+vec3 import_test() {
+    return vec3(1.0);
+}

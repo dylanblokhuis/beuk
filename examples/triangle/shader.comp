@@ -1,4 +1,6 @@
-#version 450
+#version 460
+
+#include <./test.inc.comp>
 
 layout(local_size_x = 16, local_size_y = 16) in;
 
@@ -9,7 +11,7 @@ void main() {
     ivec2 storePos = ivec2(gl_GlobalInvocationID.xy);
 
     vec4 color = imageLoad(srcImage, storePos);
-    color.rgb = vec3(1.0) - color.rgb; // Invert colors
+    color.rgb = import_test() - color.rgb; // Invert colors
 
     imageStore(dstImage, storePos, color);
 }
