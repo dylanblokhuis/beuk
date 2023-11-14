@@ -507,7 +507,7 @@ impl Shader {
                     if let ShaderSource::File(shader_file_to_reload) = &desc.source {
                         crate::hot_reload::INCLUDED_SHADERS.lock().unwrap().insert((
                             path.canonicalize().unwrap(),
-                            shader_file_to_reload.to_path_buf().canonicalize().unwrap(),
+                            shader_file_to_reload.canonicalize().unwrap(),
                         ));
                     }
 

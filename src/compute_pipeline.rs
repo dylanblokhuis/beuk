@@ -77,7 +77,7 @@ impl ComputePipeline {
             Vec::new()
         };
 
-        println!("sets_prepended: {:?}", sets_prepended);
+        log::debug!("sets_prepended: {:?}", sets_prepended);
 
         let mut descriptor_set_layouts = desc
             .prepend_descriptor_sets

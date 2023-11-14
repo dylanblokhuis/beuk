@@ -50,7 +50,9 @@ impl ShaderHotReload {
 
                         let shader_mapping = ctx.shader_mapping.read().unwrap();
 
-                        let Some(shader_desc) = shader_mapping.keys().find(|shader_desc| {
+                        let mut shader_descs = vec![];
+
+                        for shader_desc in shader_mapping.keys() {
                             if let ShaderSource::File(shader_desc_path) = &shader_desc.source {
                                 let shader_desc_path_absolute =
                                     std::fs::canonicalize(shader_desc_path).unwrap();
@@ -58,7 +60,7 @@ impl ShaderHotReload {
 
                                 // is the shader we're reloading the source?
                                 if shader_desc_path_absolute == path_absolute {
-                                    return true;
+                                    shader_descs.push(shader_desc.clone());
                                 }
 
                                 // is the shader that changed included in a source shader?
@@ -67,126 +69,133 @@ impl ShaderHotReload {
                                     lock.get(&(path_absolute, shader_desc_path_absolute));
 
                                 if maybe_included_shader.is_some() {
-                                    return true;
+                                    shader_descs.push(shader_desc.clone());
                                 }
-
-                                false
-                            } else {
-                                false
                             }
-                        }) else {
-                            log::error!("No shader found for path: {}", path);
-                            continue;
-                        };
+                        }
 
-                        let shader_desc = shader_desc.clone();
-                        let ShaderSource::File(shader_desc_path) = &shader_desc.source else {
-                            log::error!(
-                                "Tried to hot reload a shader that wasn't loaded from a file"
-                            );
-                            continue;
-                        };
-
-                        let shader_handle = shader_mapping.get(&shader_desc).unwrap();
-
-                        match shader_desc.kind {
-                            crate::shaders::ShaderKind::Fragment
-                            | crate::shaders::ShaderKind::Vertex => {
-                                let pipeline_mapping =
-                                    ctx.graphics_pipeline_mapping.read().unwrap();
-                                let Some(pipeline_desc) = pipeline_mapping.keys().find(|desc| {
-                                    desc.vertex.shader == *shader_handle
-                                        || desc.fragment.shader == *shader_handle
-                                }) else {
-                                    log::error!(
-                                        "[Hot-reload] No pipeline found for shader: {:?}",
-                                        shader_desc
-                                    );
-                                    continue;
-                                };
-
-                                let mut shader_defines = shader_desc.defines.clone();
-                                shader_defines.push((
-                                    "RELOAD_TIME".to_string(),
-                                    Some(
-                                        SystemTime::now()
-                                            .duration_since(UNIX_EPOCH)
-                                            .unwrap()
-                                            .as_secs()
-                                            .to_string(),
-                                    ),
-                                ));
-                                let new_shader = Shader::from_source_text(
-                                    &ctx,
-                                    &ShaderDescriptor {
-                                        defines: shader_defines,
-                                        entry_point: shader_desc.entry_point.clone(),
-                                        kind: shader_desc.kind,
-                                        label: shader_desc.label,
-                                        optimization: shader_desc.optimization,
-                                        source: ShaderSource::File(shader_desc_path.clone()),
-                                    },
+                        for shader_desc in shader_descs {
+                            let shader_desc = shader_desc.clone();
+                            let ShaderSource::File(shader_desc_path) = &shader_desc.source else {
+                                log::error!(
+                                    "Tried to hot reload a shader that wasn't loaded from a file"
                                 );
+                                continue;
+                            };
 
-                                let mut shader = ctx.shader_manager.get_mut(shader_handle).unwrap();
-                                shader.inner = new_shader;
-                                drop(shader);
+                            let shader_handle = shader_mapping.get(&shader_desc).unwrap();
 
-                                let pipeline_handle = pipeline_mapping.get(pipeline_desc).unwrap();
-                                let mut pipeline =
-                                    ctx.graphics_pipelines.get_mut(pipeline_handle).unwrap();
-                                let mut new_pipeline = GraphicsPipeline::new(&ctx, pipeline_desc);
-                                new_pipeline.descriptor_sets = pipeline.descriptor_sets.clone();
-                                new_pipeline.descriptor_pool = pipeline.descriptor_pool;
-                                pipeline.inner = new_pipeline;
-                            }
-                            crate::shaders::ShaderKind::Compute => {
-                                let pipeline_mapping = ctx.compute_pipeline_mapping.read().unwrap();
-                                let Some(pipeline_desc) = pipeline_mapping
-                                    .keys()
-                                    .find(|desc| desc.shader == *shader_handle)
-                                else {
-                                    log::error!(
-                                        "[Hot-reload] No pipeline found for shader: {:?}",
-                                        shader_desc
+                            match shader_desc.kind {
+                                crate::shaders::ShaderKind::Fragment
+                                | crate::shaders::ShaderKind::Vertex => {
+                                    let pipeline_mapping =
+                                        ctx.graphics_pipeline_mapping.read().unwrap();
+                                    let Some(pipeline_desc) =
+                                        pipeline_mapping.keys().find(|desc| {
+                                            desc.vertex.shader == *shader_handle
+                                                || desc.fragment.shader == *shader_handle
+                                        })
+                                    else {
+                                        log::error!(
+                                            "[Hot-reload] No pipeline found for shader: {:?}",
+                                            shader_desc
+                                        );
+                                        continue;
+                                    };
+
+                                    let mut shader_defines = shader_desc.defines.clone();
+                                    shader_defines.push((
+                                        "RELOAD_TIME".to_string(),
+                                        Some(
+                                            SystemTime::now()
+                                                .duration_since(UNIX_EPOCH)
+                                                .unwrap()
+                                                .as_secs()
+                                                .to_string(),
+                                        ),
+                                    ));
+                                    let new_shader = Shader::from_source_text(
+                                        &ctx,
+                                        &ShaderDescriptor {
+                                            defines: shader_defines,
+                                            entry_point: shader_desc.entry_point.clone(),
+                                            kind: shader_desc.kind,
+                                            label: shader_desc.label,
+                                            optimization: shader_desc.optimization,
+                                            source: ShaderSource::File(shader_desc_path.clone()),
+                                        },
                                     );
-                                    continue;
-                                };
 
-                                let mut shader_defines = shader_desc.defines.clone();
-                                shader_defines.push((
-                                    "RELOAD_TIME".to_string(),
-                                    Some(
-                                        SystemTime::now()
-                                            .duration_since(UNIX_EPOCH)
-                                            .unwrap()
-                                            .as_secs()
-                                            .to_string(),
-                                    ),
-                                ));
-                                let new_shader = Shader::from_source_text(
-                                    &ctx,
-                                    &ShaderDescriptor {
-                                        defines: shader_defines,
-                                        entry_point: shader_desc.entry_point.clone(),
-                                        kind: shader_desc.kind,
-                                        label: shader_desc.label,
-                                        optimization: shader_desc.optimization,
-                                        source: ShaderSource::File(shader_desc_path.clone()),
-                                    },
-                                );
+                                    let mut shader =
+                                        ctx.shader_manager.get_mut(shader_handle).unwrap();
+                                    shader.inner = new_shader;
+                                    drop(shader);
 
-                                let mut shader = ctx.shader_manager.get_mut(shader_handle).unwrap();
-                                shader.inner = new_shader;
-                                drop(shader);
+                                    let pipeline_handle =
+                                        pipeline_mapping.get(pipeline_desc).unwrap();
+                                    let mut pipeline =
+                                        ctx.graphics_pipelines.get_mut(pipeline_handle).unwrap();
+                                    let mut new_pipeline =
+                                        GraphicsPipeline::new(&ctx, pipeline_desc);
+                                    new_pipeline.descriptor_sets = pipeline.descriptor_sets.clone();
+                                    new_pipeline.descriptor_pool = pipeline.descriptor_pool;
+                                    pipeline.inner = new_pipeline;
+                                    log::info!("Reloaded shader: {:?}", shader_desc);
+                                }
+                                crate::shaders::ShaderKind::Compute => {
+                                    let pipeline_mapping =
+                                        ctx.compute_pipeline_mapping.read().unwrap();
+                                    let Some(pipeline_desc) = pipeline_mapping
+                                        .keys()
+                                        .find(|desc| desc.shader == *shader_handle)
+                                    else {
+                                        log::error!(
+                                            "[Hot-reload] No pipeline found for shader: {:?}",
+                                            shader_desc
+                                        );
+                                        continue;
+                                    };
 
-                                let pipeline_handle = pipeline_mapping.get(pipeline_desc).unwrap();
-                                let mut pipeline =
-                                    ctx.compute_pipelines.get_mut(pipeline_handle).unwrap();
-                                let mut new_pipeline = ComputePipeline::new(&ctx, pipeline_desc);
-                                new_pipeline.descriptor_sets = pipeline.descriptor_sets.clone();
-                                new_pipeline.descriptor_pool = pipeline.descriptor_pool;
-                                pipeline.inner = new_pipeline;
+                                    let mut shader_defines = shader_desc.defines.clone();
+                                    shader_defines.push((
+                                        "RELOAD_TIME".to_string(),
+                                        Some(
+                                            SystemTime::now()
+                                                .duration_since(UNIX_EPOCH)
+                                                .unwrap()
+                                                .as_secs()
+                                                .to_string(),
+                                        ),
+                                    ));
+                                    let new_shader = Shader::from_source_text(
+                                        &ctx,
+                                        &ShaderDescriptor {
+                                            defines: shader_defines,
+                                            entry_point: shader_desc.entry_point.clone(),
+                                            kind: shader_desc.kind,
+                                            label: shader_desc.label,
+                                            optimization: shader_desc.optimization,
+                                            source: ShaderSource::File(shader_desc_path.clone()),
+                                        },
+                                    );
+
+                                    let mut shader =
+                                        ctx.shader_manager.get_mut(shader_handle).unwrap();
+                                    shader.inner = new_shader;
+                                    drop(shader);
+
+                                    let pipeline_handle =
+                                        pipeline_mapping.get(pipeline_desc).unwrap();
+                                    let mut pipeline =
+                                        ctx.compute_pipelines.get_mut(pipeline_handle).unwrap();
+                                    let mut new_pipeline =
+                                        ComputePipeline::new(&ctx, pipeline_desc);
+                                    new_pipeline.descriptor_sets = pipeline.descriptor_sets.clone();
+                                    new_pipeline.descriptor_pool = pipeline.descriptor_pool;
+                                    pipeline.inner = new_pipeline;
+
+                                    log::info!("Reloaded compute shader: {:?}", shader_desc);
+                                }
                             }
                         }
                     }
