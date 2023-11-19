@@ -1,5 +1,5 @@
-mod manager_lock;
 mod manager;
+mod manager_lock;
 
-pub use manager_lock::{ResourceManager, ResourceHooks, ResourceHandle};
-pub use manager::{UnsafeResourceManager, UnsafeResourceHandle};
+pub use manager::{UnsafeResourceHandle, UnsafeResourceManager};
+pub use manager_lock::{ResourceHandle, ResourceHooks, ResourceId, ResourceManager};
