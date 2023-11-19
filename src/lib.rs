@@ -2,6 +2,7 @@ pub mod buffer;
 mod chunky_list;
 pub mod compute_pipeline;
 pub mod ctx;
+pub mod graph;
 pub mod graphics_pipeline;
 #[cfg(feature = "hot-reload")]
 pub mod hot_reload;
