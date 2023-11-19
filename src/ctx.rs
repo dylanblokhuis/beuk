@@ -1389,6 +1389,152 @@ impl RenderContext {
         texture_handle
     }
 
+    /// based on the amount of mip levels, this function will generate mip maps for the texture.
+    pub fn generate_mipmaps(
+        &self,
+        command_buffer: vk::CommandBuffer,
+        texture: &ResourceHandle<Texture>,
+    ) {
+        let mut texture = texture.get_mut();
+
+        if texture.mip_levels == 1 {
+            log::warn!("Texture has only one mip level, skipping mip map generation.");
+            return;
+        }
+
+        let mut mip_width = texture.extent.width;
+        let mut mip_height = texture.extent.height;
+
+        let mut barrier = vk::ImageMemoryBarrier::default()
+            .image(texture.image)
+            .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+            .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+            .subresource_range(texture.subresource_range);
+
+        for mip_level in 1..texture.mip_levels {
+            barrier.subresource_range.base_mip_level = mip_level - 1;
+            barrier.old_layout = vk::ImageLayout::TRANSFER_DST_OPTIMAL;
+            barrier.new_layout = vk::ImageLayout::TRANSFER_SRC_OPTIMAL;
+            barrier.src_access_mask = vk::AccessFlags::TRANSFER_WRITE;
+            barrier.dst_access_mask = vk::AccessFlags::TRANSFER_READ;
+
+            unsafe {
+                self.device.cmd_pipeline_barrier(
+                    command_buffer,
+                    vk::PipelineStageFlags::TRANSFER,
+                    vk::PipelineStageFlags::TRANSFER,
+                    vk::DependencyFlags::empty(),
+                    &[] as &[vk::MemoryBarrier],
+                    &[] as &[vk::BufferMemoryBarrier],
+                    &[barrier],
+                );
+            }
+
+            log::debug!("Generating mip level {}", mip_level);
+            log::debug!("mip_width: {}", mip_width);
+            log::debug!("mip_height: {}", mip_height);
+
+            let src_subresource = vk::ImageSubresourceLayers::default()
+                .aspect_mask(vk::ImageAspectFlags::COLOR)
+                .mip_level(mip_level - 1)
+                .base_array_layer(0)
+                .layer_count(1);
+
+            let dst_subresource = vk::ImageSubresourceLayers::default()
+                .aspect_mask(vk::ImageAspectFlags::COLOR)
+                .mip_level(mip_level)
+                .base_array_layer(0)
+                .layer_count(1);
+
+            let blit = vk::ImageBlit::default()
+                .src_offsets([
+                    vk::Offset3D { x: 0, y: 0, z: 0 },
+                    vk::Offset3D {
+                        x: mip_width as i32,
+                        y: mip_height as i32,
+                        z: 1,
+                    },
+                ])
+                .src_subresource(src_subresource)
+                .dst_offsets([
+                    vk::Offset3D { x: 0, y: 0, z: 0 },
+                    vk::Offset3D {
+                        x: (if mip_width > 1 { mip_width / 2 } else { 1 }) as i32,
+                        y: (if mip_height > 1 { mip_height / 2 } else { 1 }) as i32,
+                        z: 1,
+                    },
+                ])
+                .dst_subresource(dst_subresource);
+
+            unsafe {
+                self.device.cmd_blit_image(
+                    command_buffer,
+                    texture.image,
+                    vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
+                    texture.image,
+                    vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+                    &[blit],
+                    vk::Filter::LINEAR,
+                );
+
+                barrier.old_layout = vk::ImageLayout::TRANSFER_SRC_OPTIMAL;
+                barrier.new_layout = vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL;
+                barrier.src_access_mask = vk::AccessFlags::TRANSFER_READ;
+                barrier.dst_access_mask = vk::AccessFlags::SHADER_READ;
+
+                self.device.cmd_pipeline_barrier(
+                    command_buffer,
+                    vk::PipelineStageFlags::TRANSFER,
+                    vk::PipelineStageFlags::FRAGMENT_SHADER,
+                    vk::DependencyFlags::empty(),
+                    &[] as &[vk::MemoryBarrier],
+                    &[] as &[vk::BufferMemoryBarrier],
+                    &[barrier],
+                );
+            }
+
+            if mip_width > 1 {
+                mip_width /= 2;
+            }
+
+            if mip_height > 1 {
+                mip_height /= 2;
+            }
+        }
+
+        unsafe {
+            barrier.subresource_range.base_mip_level = texture.mip_levels - 1;
+            barrier.old_layout = vk::ImageLayout::TRANSFER_DST_OPTIMAL;
+            barrier.new_layout = vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL;
+            barrier.src_access_mask = vk::AccessFlags::TRANSFER_WRITE;
+            barrier.dst_access_mask = vk::AccessFlags::SHADER_READ;
+
+            self.device.cmd_pipeline_barrier(
+                command_buffer,
+                vk::PipelineStageFlags::TRANSFER,
+                vk::PipelineStageFlags::FRAGMENT_SHADER,
+                vk::DependencyFlags::empty(),
+                &[] as &[vk::MemoryBarrier],
+                &[] as &[vk::BufferMemoryBarrier],
+                &[barrier],
+            );
+        }
+
+        // texture.subresource_range.level_count = 1;
+        // texture.subresource_range.base_mip_level = texture.mip_levels - 1;
+        // texture.transition(
+        //     &self.device,
+        //     command_buffer,
+        //     &TransitionDesc {
+        //         new_layout: vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
+        //         new_access_mask: vk::AccessFlags::SHADER_READ,
+        //         new_stage_mask: vk::PipelineStageFlags::FRAGMENT_SHADER,
+        //     },
+        // );
+
+        texture.subresource_range.base_mip_level = 0;
+    }
+
     /// Creates or gets (if already created) a texture view, which can be cloned cheaply.
     pub fn get_texture_view(
         &self,

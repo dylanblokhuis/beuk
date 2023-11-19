@@ -190,16 +190,7 @@ impl Texture {
                         b: vk::ComponentSwizzle::B,
                         a: vk::ComponentSwizzle::A,
                     },
-                    subresource_range: vk::ImageSubresourceRange {
-                        aspect_mask: if Self::is_depth(self.format) {
-                            vk::ImageAspectFlags::DEPTH
-                        } else {
-                            vk::ImageAspectFlags::COLOR
-                        },
-                        level_count: 1,
-                        layer_count: 1,
-                        ..Default::default()
-                    },
+                    subresource_range: self.subresource_range,
                     image: self.image,
                     ..Default::default()
                 },
@@ -272,59 +263,6 @@ impl Texture {
             ..Default::default()
         }
     }
-
-    // pub fn from_image_buffer(
-    //     render_instance: &RenderInstance,
-    //     render_allocator: &mut RenderAllocator,
-    //     image: DynamicImage,
-    //     format: vk::Format,
-    // ) -> Self {
-    //     let texture = Self::new(
-    //         render_instance.device(),
-    //         render_allocator.allocator(),
-    //         &vk::ImageCreateInfo::default()
-    //             .image_type(vk::ImageType::TYPE_2D)
-    //             .format(format)
-    //             .extent(vk::Extent3D {
-    //                 width: image.width(),
-    //                 height: image.height(),
-    //                 depth: 1,
-    //             })
-    //             .mip_levels(1)
-    //             .array_layers(1)
-    //             .samples(vk::SampleCountFlags::TYPE_1)
-    //             .tiling(vk::ImageTiling::OPTIMAL)
-    //             .usage(vk::ImageUsageFlags::SAMPLED | vk::ImageUsageFlags::TRANSFER_DST)
-    //             .sharing_mode(vk::SharingMode::EXCLUSIVE),
-    //     );
-
-    //     {
-    //         // let image_data = match format {
-    //         //     vk::Format::R8G8B8A8_SRGB => image.to_rgba8().into_raw(),
-    //         //     vk::Format::R8G8B8_SRGB => image.to_rgb8().into_raw(),
-    //         //     _ => unimplemented!("Format not supported yet"),
-    //         // };
-    //         let image_data = image.to_rgba8().into_raw();
-    //         let mut img_buffer = Buffer::new(
-    //             render_instance.device(),
-    //             render_allocator.allocator(),
-    //             &vk::BufferCreateInfo::default()
-    //                 .size(image_data.len() as DeviceSize)
-    //                 .usage(vk::BufferUsageFlags::TRANSFER_SRC)
-    //                 .sharing_mode(vk::SharingMode::EXCLUSIVE),
-    //             MemoryLocation::CpuToGpu,
-    //         );
-    //         img_buffer.copy_from_slice(&image_data, 0);
-
-    //         render_instance
-    //             .0
-    //             .copy_buffer_to_texture(&img_buffer, &texture);
-
-    //         img_buffer.destroy(render_instance.device(), render_allocator.allocator());
-    //     }
-
-    //     texture
-    // }
 
     pub fn is_depth(format: vk::Format) -> bool {
         format == vk::Format::D32_SFLOAT

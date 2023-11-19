@@ -1,4 +1,4 @@
-use ash::vk::{SamplerAddressMode, Filter};
+use ash::vk::{Filter, SamplerAddressMode};
 use beuk::ash::vk::{self, BufferUsageFlags};
 use beuk::buffer::MemoryLocation;
 use beuk::buffer::{Buffer, BufferDescriptor};
@@ -8,6 +8,7 @@ use beuk::graphics_pipeline::{
 };
 use beuk::memory::ResourceHandle;
 use beuk::shaders::ShaderDescriptor;
+use beuk::texture::Texture;
 use beuk::{
     ctx::RenderContext,
     graphics_pipeline::{GraphicsPipelineDescriptor, PrimitiveState},
@@ -75,6 +76,7 @@ struct Canvas {
     pipeline_handle: ResourceHandle<GraphicsPipeline>,
     vertex_buffer: ResourceHandle<Buffer>,
     index_buffer: ResourceHandle<Buffer>,
+    texture_handle: ResourceHandle<Texture>,
 }
 
 #[repr(C, align(16))]
@@ -184,11 +186,19 @@ impl Canvas {
                     height: image.height() as u32,
                     depth: 1,
                 },
-                usage: vk::ImageUsageFlags::TRANSFER_DST | vk::ImageUsageFlags::SAMPLED,
-                mip_levels: 1,
+                usage: vk::ImageUsageFlags::TRANSFER_DST
+                    | vk::ImageUsageFlags::SAMPLED
+                    | vk::ImageUsageFlags::TRANSFER_SRC,
+                // mip_levels: (image.width() as f32)
+                //     .max(image.height() as f32)
+                //     .log2()
+                //     .floor() as u32
+                //     + 1,
+                mip_levels: 3,
                 array_layers: 1,
                 samples: vk::SampleCountFlags::TYPE_1,
                 sharing_mode: vk::SharingMode::EXCLUSIVE,
+
                 ..Default::default()
             },
             image.to_rgba8().as_bytes(),
@@ -196,6 +206,9 @@ impl Canvas {
             false,
         );
 
+        ctx.record_submit(|command_buffer| {
+            ctx.generate_mipmaps(command_buffer, &texture_handle);
+        });
 
         let mut pipeline = ctx.graphics_pipelines.get_mut(&pipeline_handle).unwrap();
         pipeline.queue_descriptor_image(
@@ -205,11 +218,13 @@ impl Canvas {
             vk::DescriptorImageInfo::default()
                 .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
                 .sampler(
-                    *ctx.immutable_samplers.get(&SamplerDesc {
-                        address_modes: SamplerAddressMode::CLAMP_TO_EDGE,
-                        texel_filter: Filter::NEAREST,
-                        mipmap_mode: vk::SamplerMipmapMode::NEAREST,
-                    }).unwrap()   
+                    *ctx.immutable_samplers
+                        .get(&SamplerDesc {
+                            address_modes: SamplerAddressMode::CLAMP_TO_EDGE,
+                            texel_filter: Filter::NEAREST,
+                            mipmap_mode: vk::SamplerMipmapMode::NEAREST,
+                        })
+                        .unwrap(),
                 )
                 .image_view(*ctx.get_texture_view(&texture_handle).unwrap()),
         );
@@ -218,6 +233,7 @@ impl Canvas {
             pipeline_handle,
             vertex_buffer,
             index_buffer,
+            texture_handle,
         }
     }
 
