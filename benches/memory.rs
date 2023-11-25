@@ -1,8 +1,6 @@
-use std::{
-    sync::{Arc, Mutex},
-};
+use std::sync::{Arc, Mutex};
 
-use ash::vk::{Extent2D};
+use ash::vk::Extent2D;
 use beuk::{
     ctx::{RenderContext, RenderContextDescriptor},
     memory::{
@@ -11,7 +9,6 @@ use beuk::{
 };
 use gpu_allocator::vulkan::Allocator;
 use raw_window_handle::{HasRawDisplayHandle, HasRawWindowHandle};
-
 
 #[repr(C, align(16))]
 #[derive(Debug, Default, Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
@@ -48,6 +45,7 @@ pub fn criterion_benchmark(c: &mut Criterion) {
     }));
 
     let resource_manager = Arc::new(ResourceManager::<Test>::new(
+        0,
         ctx.device.clone(),
         ctx.allocator.clone(),
         100,
@@ -58,6 +56,7 @@ pub fn criterion_benchmark(c: &mut Criterion) {
     });
 
     let resource_manager = Arc::new(ResourceManager::<Test>::new(
+        1,
         ctx.device.clone(),
         ctx.allocator.clone(),
         100,
@@ -67,6 +66,7 @@ pub fn criterion_benchmark(c: &mut Criterion) {
     });
 
     let resource_manager = Arc::new(UnsafeResourceManager::<Test>::new(
+        2,
         ctx.device.clone(),
         ctx.allocator.clone(),
         100,
@@ -76,6 +76,7 @@ pub fn criterion_benchmark(c: &mut Criterion) {
     });
 
     let resource_manager = Arc::new(UnsafeResourceManager::<Test>::new(
+        3,
         ctx.device.clone(),
         ctx.allocator.clone(),
         100,

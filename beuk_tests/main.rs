@@ -120,6 +120,7 @@ fn test_capacity_with_vulkan_buffers(ctx: Arc<RenderContext>) {
 
 fn test_capacity(ctx: Arc<RenderContext>) {
     let resource_manager = Arc::new(ResourceManager::<Test>::new(
+        0,
         ctx.device.clone(),
         ctx.allocator.clone(),
         100,
@@ -235,6 +236,7 @@ fn test_multithreaded(ctx: Arc<RenderContext>) {
 
 fn test_gc(ctx: Arc<RenderContext>) {
     let resource_manager = Arc::new(ResourceManager::<Test>::new(
+        0,
         ctx.device.clone(),
         ctx.allocator.clone(),
         100,

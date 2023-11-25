@@ -479,12 +479,16 @@ impl RenderContext {
                 Self::create_command_thread_pool(device.clone(), queue_family_index);
             let command_thread_pool = Arc::new(command_thread_pool);
 
-            let buffer_manager = ResourceManager::new(device.clone(), allocator.clone(), 52);
-            let texture_manager =
-                Arc::new(ResourceManager::new(device.clone(), allocator.clone(), 52));
-            let graphics_pipelines = ResourceManager::new(device.clone(), allocator.clone(), 32);
-            let compute_pipelines = ResourceManager::new(device.clone(), allocator.clone(), 32);
-            let shader_manager = ResourceManager::new(device.clone(), allocator.clone(), 32 * 2);
+            let buffer_manager = ResourceManager::new(0, device.clone(), allocator.clone(), 52);
+            let texture_manager = Arc::new(ResourceManager::new(
+                1,
+                device.clone(),
+                allocator.clone(),
+                52,
+            ));
+            let graphics_pipelines = ResourceManager::new(2, device.clone(), allocator.clone(), 32);
+            let compute_pipelines = ResourceManager::new(3, device.clone(), allocator.clone(), 32);
+            let shader_manager = ResourceManager::new(4, device.clone(), allocator.clone(), 32 * 2);
 
             let present_queue = Arc::new(Mutex::new(present_queue));
             let thread_id = std::thread::current().id();

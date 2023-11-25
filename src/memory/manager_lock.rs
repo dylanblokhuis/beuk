@@ -66,9 +66,11 @@ impl<T: Default + Debug + ResourceHooks> PartialEq for ResourceHandle<T> {
 
 impl<T: Default + Debug + ResourceHooks> Eq for ResourceHandle<T> {}
 
+// hash by the resource id and type id
 impl<T: Default + Debug + ResourceHooks> Hash for ResourceHandle<T> {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
         self.id.hash(state);
+        self.manager.id.hash(state);
     }
 }
 
@@ -97,6 +99,7 @@ impl<T: Default + Debug + ResourceHooks> ResourceHandle<T> {
 pub struct ResourceId {
     pub index: Index,
     pub(super) generation: Generation,
+    pub manager_id: usize,
 }
 
 impl<T: Default + Debug + ResourceHooks> Clone for ResourceHandle<T> {
@@ -124,6 +127,7 @@ pub struct ResourceManager<T> {
     pub free_indices: Arc<Mutex<VecDeque<usize>>>,
     device: Arc<ash::Device>,
     allocator: Arc<Mutex<Allocator>>,
+    pub id: usize,
 }
 
 impl<T: Debug> Debug for ResourceManager<T> {
@@ -137,6 +141,7 @@ impl<T: Debug> Debug for ResourceManager<T> {
 
 impl<T: Default + Debug + ResourceHooks> ResourceManager<T> {
     pub fn new(
+        id: usize,
         device: Arc<ash::Device>,
         allocator: Arc<Mutex<Allocator>>,
         capacity: usize,
@@ -154,6 +159,7 @@ impl<T: Default + Debug + ResourceHooks> ResourceManager<T> {
         }
 
         Self {
+            id,
             resources,
             free_indices: Arc::new(Mutex::new(queue)),
             device,
@@ -163,7 +169,9 @@ impl<T: Default + Debug + ResourceHooks> ResourceManager<T> {
 
     #[tracing::instrument(skip(self, handle))]
     pub fn get(&self, handle: &ResourceHandle<T>) -> Option<MutexGuard<Resource<T>>> {
-        let ResourceId { index, generation } = handle.id();
+        let ResourceId {
+            index, generation, ..
+        } = handle.id();
         let resource = self.resources.get(index);
         let Some(lock) = resource else {
             return None;
@@ -179,7 +187,9 @@ impl<T: Default + Debug + ResourceHooks> ResourceManager<T> {
 
     #[tracing::instrument(skip(self, handle))]
     pub fn get_mut(&self, handle: &ResourceHandle<T>) -> Option<MutexGuard<Resource<T>>> {
-        let ResourceId { index, generation } = handle.id();
+        let ResourceId {
+            index, generation, ..
+        } = handle.id();
         let resource = self.resources.get(index);
         let Some(lock) = resource else {
             return None;
@@ -224,7 +234,27 @@ impl<T: Default + Debug + ResourceHooks> ResourceManager<T> {
         ResourceId {
             index,
             generation: new_generation,
+            manager_id: self.id,
         }
+    }
+
+    pub fn handle_from_id(
+        manager: Arc<ResourceManager<T>>,
+        handle: ResourceId,
+    ) -> Result<ResourceHandle<T>> {
+        let resource = manager.resources.get(handle.index);
+        let Some(lock) = resource else {
+            return Err(anyhow!("No resource at index {:?}", handle.index));
+        };
+
+        let mut data = lock.0.lock().unwrap();
+        if handle.generation != data.generation {
+            // its OK to destroy a handle thats no longer valid, since it has already been destroyed.
+            return Err(anyhow!("Resource generation mismatch"));
+        }
+        data.retain_count += 1;
+
+        Ok(ResourceHandle::new(handle, manager.clone()))
     }
 
     #[tracing::instrument(skip(self, handle))]

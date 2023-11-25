@@ -248,6 +248,27 @@ impl Texture {
         self.stage_mask = desc.new_stage_mask;
     }
 
+    pub fn transition_without_barrier(
+        &mut self,
+        device: &ash::Device,
+        command_buffer: vk::CommandBuffer,
+        desc: &TransitionDesc,
+    ) -> vk::ImageMemoryBarrier {
+        let image_memory_barrier = vk::ImageMemoryBarrier::default()
+            .src_access_mask(self.access_mask)
+            .dst_access_mask(desc.new_access_mask)
+            .old_layout(self.layout)
+            .new_layout(desc.new_layout)
+            .image(self.image)
+            .subresource_range(self.subresource_range);
+
+        self.access_mask = desc.new_access_mask;
+        self.layout = desc.new_layout;
+        self.stage_mask = desc.new_stage_mask;
+
+        image_memory_barrier
+    }
+
     pub fn from_swapchain_image(image: vk::Image) -> Texture {
         Self {
             image,
