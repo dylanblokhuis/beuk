@@ -916,7 +916,7 @@ impl RenderContext {
 
     /// Acquires the next image, transitions the image from the swapchain and records the draw command buffer. Returns the present_index
     #[tracing::instrument(skip_all)]
-    pub fn present_record<F: FnOnce(vk::CommandBuffer, ImageView, ImageView) + Send + Sync>(
+    pub fn present_record<F: FnOnce(vk::CommandBuffer, ImageView, ImageView)>(
         &self,
         present_index: u32,
         f: F,

@@ -66,6 +66,7 @@ unsafe impl<T> Send for ResourceInner<T> {}
 unsafe impl<T> Sync for ResourceInner<T> {}
 
 /// Same as ResourceManager but holds no interior lock, roughly 2x faster. But obviously has issues with thread safety.
+/// So only use this if you can guarantee safety
 pub struct UnsafeResourceManager<T> {
     id: usize,
     resources: Arc<boxcar::Vec<ResourceInner<T>>>,

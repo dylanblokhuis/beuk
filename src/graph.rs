@@ -1,18 +1,18 @@
-use std::{collections::HashMap, sync::Arc};
+use std::{
+    collections::{BTreeMap, HashMap},
+    sync::Arc,
+};
 
 use ash::vk::{self, CommandBuffer, ShaderStageFlags};
-use petgraph::{
-    graphmap::{DiGraphMap, NodeTrait},
-    visit::IntoNodeReferences,
-};
+use petgraph::{graphmap::DiGraphMap, visit::IntoNodeReferences};
 
 use crate::{
     buffer::Buffer,
     compute_pipeline::{ComputePipeline, ComputePipelineDescriptor},
-    ctx::RenderContext,
+    ctx::{RenderContext, SamplerDesc},
     graphics_pipeline::{GraphicsPipeline, GraphicsPipelineDescriptor},
     memory::{ResourceHandle, ResourceId, ResourceManager},
-    texture::{Texture, TransitionDesc},
+    texture::Texture,
 };
 
 #[derive(Hash, PartialEq, Eq, Clone, PartialOrd, Ord, Copy, Debug)]
@@ -27,32 +27,27 @@ pub struct PassId {
     pass_type: PassType,
 }
 
-pub struct RenderGraph {
+pub struct RenderGraph<'rg, W> {
     pub ctx: Arc<RenderContext>,
-    pub(super) compute_passes: HashMap<PassId, ComputePass>,
-    pub(super) graphics_passes: HashMap<PassId, GraphicsPass>,
+    pub(super) compute_passes: BTreeMap<PassId, ComputePass<W>>,
+    pub(super) graphics_passes: BTreeMap<PassId, GraphicsPass<W>>,
     // track in which order the resources are accessed by the added passes
-    pub read_buffer_dependencies: HashMap<ResourceHandle<Buffer>, Vec<PassId>>,
-    pub write_buffer_dependencies: HashMap<ResourceHandle<Buffer>, Vec<PassId>>,
-    pub read_texture_dependencies: HashMap<ResourceHandle<Texture>, Vec<PassId>>,
-    pub write_texture_dependencies: HashMap<ResourceHandle<Texture>, Vec<PassId>>,
-    pub binding_order: HashMap<PassId, Vec<ResourceId>>,
-
     current_built_graph: Option<DiGraphMap<PassId, ()>>,
+    built_entry_nodes: Vec<PassId>,
+    last_ran_pass: Option<PassId>,
+    pub world: Option<&'rg W>,
 }
 
-impl RenderGraph {
+impl<'rg, W> RenderGraph<'rg, W> {
     pub fn new(ctx: Arc<RenderContext>) -> Self {
         Self {
             ctx,
-            compute_passes: HashMap::new(),
-            graphics_passes: HashMap::new(),
-            read_buffer_dependencies: HashMap::new(),
-            write_buffer_dependencies: HashMap::new(),
-            read_texture_dependencies: HashMap::new(),
-            write_texture_dependencies: HashMap::new(),
-            binding_order: HashMap::new(),
+            compute_passes: BTreeMap::new(),
+            graphics_passes: BTreeMap::new(),
             current_built_graph: None,
+            built_entry_nodes: vec![],
+            world: None,
+            last_ran_pass: None,
         }
     }
 
@@ -61,16 +56,78 @@ impl RenderGraph {
         let mut graph = DiGraphMap::<PassId, ()>::new();
 
         // Add nodes for each compute pass
-        for (&label, _) in &self.compute_passes {
-            graph.add_node(label);
+        for label in self.compute_passes.keys() {
+            graph.add_node(*label);
         }
 
         // Add nodes for each graphics pass
-        for (&label, _) in &self.graphics_passes {
-            graph.add_node(label);
+        for label in self.graphics_passes.keys() {
+            graph.add_node(*label);
         }
 
-        for (_, passes) in &self.write_buffer_dependencies {
+        let mut resource_readers: HashMap<ResourceId, Vec<PassId>> = HashMap::new();
+        let mut resource_writers: HashMap<ResourceId, Vec<PassId>> = HashMap::new();
+
+        // Populate resource usage maps
+        for (&pass_id, pass) in self.compute_passes.iter() {
+            for resource in &pass.read_buffers {
+                resource_readers
+                    .entry(resource.id())
+                    .or_default()
+                    .push(pass_id);
+            }
+            for resource in &pass.write_buffers {
+                resource_writers
+                    .entry(resource.id())
+                    .or_default()
+                    .push(pass_id);
+            }
+
+            for resource in &pass.read_textures {
+                resource_readers
+                    .entry(resource.0.id())
+                    .or_default()
+                    .push(pass_id);
+            }
+
+            for resource in &pass.write_textures {
+                resource_writers
+                    .entry(resource.id())
+                    .or_default()
+                    .push(pass_id);
+            }
+        }
+
+        for (&pass_id, pass) in self.graphics_passes.iter() {
+            for resource in &pass.read_buffers {
+                resource_readers
+                    .entry(resource.id())
+                    .or_default()
+                    .push(pass_id);
+            }
+            for resource in &pass.write_buffers {
+                resource_writers
+                    .entry(resource.id())
+                    .or_default()
+                    .push(pass_id);
+            }
+
+            for resource in &pass.read_textures {
+                resource_readers
+                    .entry(resource.0.id())
+                    .or_default()
+                    .push(pass_id);
+            }
+
+            for resource in &pass.write_textures {
+                resource_writers
+                    .entry(resource.id())
+                    .or_default()
+                    .push(pass_id);
+            }
+        }
+
+        for (_, passes) in &resource_writers {
             for (i, &pass) in passes.iter().enumerate() {
                 for &dependent_pass in &passes[i + 1..] {
                     graph.add_edge(pass, dependent_pass, ());
@@ -78,29 +135,8 @@ impl RenderGraph {
             }
         }
 
-        for (_, passes) in &self.write_texture_dependencies {
-            for (i, &pass) in passes.iter().enumerate() {
-                for &dependent_pass in &passes[i + 1..] {
-                    graph.add_edge(pass, dependent_pass, ());
-                }
-            }
-        }
-
-        // Add edges for read after write dependencies
-        for (resource, read_passes) in &self.read_buffer_dependencies {
-            if let Some(write_passes) = self.write_buffer_dependencies.get(resource) {
-                for &write_pass in write_passes {
-                    for &read_pass in read_passes {
-                        if !write_passes.contains(&read_pass) {
-                            graph.add_edge(write_pass, read_pass, ());
-                        }
-                    }
-                }
-            }
-        }
-
-        for (resource, read_passes) in &self.read_texture_dependencies {
-            if let Some(write_passes) = self.write_texture_dependencies.get(resource) {
+        for (resource, read_passes) in &resource_readers {
+            if let Some(write_passes) = resource_writers.get(resource) {
                 for &write_pass in write_passes {
                     for &read_pass in read_passes {
                         if !write_passes.contains(&read_pass) {
@@ -114,13 +150,14 @@ impl RenderGraph {
         // bind all the resources to the compute passes
         for pass in self.compute_passes.values() {
             let mut pipeline = pass.pipeline.get();
-            for (binding_index, resource_id) in
-                self.binding_order.get(&pass.id).unwrap().iter().enumerate()
-            {
+
+            for (binding_index, resource_id) in pass.binding_order.iter().enumerate() {
                 println!(
                     "binding_index: {} {}",
                     binding_index, resource_id.manager_id
                 );
+
+                let set: u32 = 0;
                 if resource_id.manager_id == self.ctx.buffer_manager.id {
                     let handle = ResourceManager::<Buffer>::handle_from_id(
                         self.ctx.buffer_manager.clone(),
@@ -130,7 +167,7 @@ impl RenderGraph {
                     let buffer = self.ctx.buffer_manager.get_mut(&handle).unwrap();
 
                     pipeline.queue_descriptor_buffer(
-                        0,
+                        set,
                         binding_index as u32,
                         0,
                         vk::DescriptorBufferInfo::default()
@@ -146,14 +183,50 @@ impl RenderGraph {
                     .unwrap();
                     let mut texture = self.ctx.texture_manager.get_mut(&handle).unwrap();
                     let view = texture.create_view(&self.ctx.device);
-                    pipeline.queue_descriptor_image(
-                        0,
-                        binding_index as u32,
-                        0,
-                        vk::DescriptorImageInfo::default()
-                            .image_view(*view)
-                            .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL),
-                    );
+
+                    if pipeline.set_layout_info[set as usize]
+                        .get(&(binding_index as u32))
+                        .is_none()
+                    {
+                        log::error!(
+                            "RenderGraph: Descriptor set layout does not support binding index {}",
+                            binding_index
+                        );
+                        continue;
+                    }
+
+                    let is_write = pass
+                        .write_textures
+                        .iter()
+                        .any(|texture| texture.id() == *resource_id);
+
+                    if is_write {
+                        pipeline.queue_descriptor_image(
+                            set,
+                            binding_index as u32,
+                            0,
+                            vk::DescriptorImageInfo::default()
+                                .image_view(*view)
+                                .image_layout(vk::ImageLayout::GENERAL),
+                        );
+                    } else {
+                        let sampler = pass.read_textures.iter().find_map(|(texture, sampler)| {
+                            if texture.id() == *resource_id && sampler.is_some() {
+                                Some(*self.ctx.immutable_samplers.get(&sampler.unwrap()).unwrap())
+                            } else {
+                                None
+                            }
+                        });
+                        pipeline.queue_descriptor_image(
+                            set,
+                            binding_index as u32,
+                            0,
+                            vk::DescriptorImageInfo::default()
+                                .image_view(*view)
+                                .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
+                                .sampler(sampler.unwrap_or(vk::Sampler::null())),
+                        );
+                    }
                 }
             }
 
@@ -162,14 +235,14 @@ impl RenderGraph {
 
         for pass in self.graphics_passes.values() {
             let mut pipeline = pass.pipeline.get();
-            let Some(bindings) = self.binding_order.get(&pass.id) else {
-                continue;
-            };
-            for (binding_index, resource_id) in bindings.iter().enumerate() {
+
+            for (binding_index, resource_id) in pass.binding_order.iter().enumerate() {
                 println!(
                     "binding_index: {} {}",
                     binding_index, resource_id.manager_id
                 );
+
+                let set: u32 = 0;
                 if resource_id.manager_id == self.ctx.buffer_manager.id {
                     let handle = ResourceManager::<Buffer>::handle_from_id(
                         self.ctx.buffer_manager.clone(),
@@ -179,7 +252,7 @@ impl RenderGraph {
                     let buffer = self.ctx.buffer_manager.get_mut(&handle).unwrap();
 
                     pipeline.queue_descriptor_buffer(
-                        0,
+                        set,
                         binding_index as u32,
                         0,
                         vk::DescriptorBufferInfo::default()
@@ -195,29 +268,60 @@ impl RenderGraph {
                     .unwrap();
                     let mut texture = self.ctx.texture_manager.get_mut(&handle).unwrap();
                     let view = texture.create_view(&self.ctx.device);
-                    pipeline.queue_descriptor_image(
-                        0,
-                        binding_index as u32,
-                        0,
-                        vk::DescriptorImageInfo::default()
-                            .image_view(*view)
-                            .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL),
-                    );
+
+                    if pipeline.set_layout_info[set as usize]
+                        .get(&(binding_index as u32))
+                        .is_none()
+                    {
+                        log::error!(
+                            "RenderGraph: Descriptor set layout does not support binding index {}",
+                            binding_index
+                        );
+                        continue;
+                    }
+
+                    let is_write = pass
+                        .write_textures
+                        .iter()
+                        .any(|texture| texture.id() == *resource_id);
+
+                    if is_write {
+                        pipeline.queue_descriptor_image(
+                            set,
+                            binding_index as u32,
+                            0,
+                            vk::DescriptorImageInfo::default()
+                                .image_view(*view)
+                                .image_layout(vk::ImageLayout::GENERAL),
+                        );
+                    } else {
+                        let sampler = pass.read_textures.iter().find_map(|(texture, sampler)| {
+                            if texture.id() == *resource_id && sampler.is_some() {
+                                Some(*self.ctx.immutable_samplers.get(&sampler.unwrap()).unwrap())
+                            } else {
+                                None
+                            }
+                        });
+                        pipeline.queue_descriptor_image(
+                            set,
+                            binding_index as u32,
+                            0,
+                            vk::DescriptorImageInfo::default()
+                                .image_view(*view)
+                                .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
+                                .sampler(sampler.unwrap_or(vk::Sampler::null())),
+                        );
+                    }
                 }
             }
 
             pipeline.update_descriptors(&self.ctx);
         }
 
-        self.current_built_graph = Some(graph);
-    }
+        let sorted_passes = petgraph::algo::toposort(&graph, None).unwrap();
+        println!("sorted_passes: {:#?}", sorted_passes);
 
-    pub fn run<T>(&mut self, data: T) {
-        let Some(graph) = &self.current_built_graph else {
-            return;
-        };
-
-        let graph_entry_nodes = graph
+        self.built_entry_nodes = graph
             .node_references()
             .filter(|(_, node)| {
                 graph
@@ -227,205 +331,342 @@ impl RenderGraph {
             })
             .map(|(node, _)| node)
             .collect::<Vec<_>>();
+        self.current_built_graph = Some(graph);
+    }
 
-        println!("{:?}", graph_entry_nodes);
+    pub fn run(&mut self, w: &'rg W) {
+        let Some(graph) = &self.current_built_graph else {
+            panic!("RenderGraph: Cannot run graph without building it first");
+        };
+        self.world = Some(w);
 
-        for entry_node in graph_entry_nodes {
-            println!("Running entry node: {:?}", entry_node);
-            self.run_pass(&entry_node);
+        let present_pass = PassId {
+            label: "present",
+            pass_type: PassType::Graphics,
+        };
 
-            for pass in graph.neighbors_directed(entry_node, petgraph::Direction::Outgoing) {
-                // let node = self.compute_passes.get(pass).unwrap();
-                self.run_pass(&pass);
+        let present_index = self.ctx.acquire_present_index();
+        let binding = self.ctx.get_command_buffer();
+        let command_buffer = binding.lock().unwrap();
+        let fence = command_buffer.fence;
+        self.ctx.record(&command_buffer, |command_buffer| {
+            // check if present is an entry node, which means there are no other nodes needed to be ran
+            if self.built_entry_nodes.contains(&&present_pass) {
+                self.run_present_pass(command_buffer, fence, present_index);
+                return;
+            }
+
+            for entry_node in self.built_entry_nodes.iter() {
+                // println!("entry_node: {:?}", entry_node);
+                self.run_pass(&entry_node, command_buffer);
+
+                for pass in graph.neighbors_directed(*entry_node, petgraph::Direction::Outgoing) {
+                    // println!("pass: {:?}", pass);
+                    if pass == present_pass {
+                        self.run_present_pass(command_buffer, fence, present_index);
+                    } else {
+                        self.run_pass(&pass, command_buffer);
+                    }
+                }
+            }
+        });
+
+        unsafe {
+            let swapchain = self.ctx.get_swapchain();
+            // submit to the present queue
+            let submit_info = vk::SubmitInfo::default()
+                .wait_semaphores(std::slice::from_ref(&self.ctx.present_complete_semaphore))
+                .wait_dst_stage_mask(&[vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT])
+                .command_buffers(std::slice::from_ref(&command_buffer.command_buffer))
+                .signal_semaphores(std::slice::from_ref(&self.ctx.rendering_complete_semaphore));
+
+            let queue = self.ctx.present_queue.lock().unwrap();
+            self.ctx
+                .device
+                .queue_submit(*queue, &[submit_info], fence)
+                .expect("queue submit failed.");
+            self.ctx
+                .device
+                .wait_for_fences(&[fence], true, std::u64::MAX)
+                .unwrap();
+
+            let wait_semaphors = [self.ctx.rendering_complete_semaphore];
+            let swapchains = [swapchain.swapchain];
+            let image_indices = [present_index];
+            let present_info = vk::PresentInfoKHR::default()
+                .wait_semaphores(&wait_semaphors)
+                .swapchains(&swapchains)
+                .image_indices(&image_indices);
+
+            let result = swapchain
+                .swapchain_loader
+                .queue_present(*queue, &present_info);
+
+            drop(queue);
+
+            match result {
+                Ok(_) => false,
+                Err(vk_result) => match vk_result {
+                    vk::Result::ERROR_OUT_OF_DATE_KHR | vk::Result::SUBOPTIMAL_KHR => true,
+                    _ => panic!("Failed to execute queue present."),
+                },
+            };
+        }
+
+        self.world = None;
+    }
+
+    fn place_barriers(&self, pass_id: &PassId, command_buffer: CommandBuffer) {
+        let (read_textures, write_textures, read_buffers, write_buffers) = match pass_id.pass_type {
+            PassType::Compute => {
+                let node = self.compute_passes.get(pass_id).unwrap();
+                (
+                    &node.read_textures,
+                    &node.write_textures,
+                    &node.read_buffers,
+                    &node.write_buffers,
+                )
+            }
+            PassType::Graphics => {
+                let node = self.graphics_passes.get(pass_id).unwrap();
+                (
+                    &node.read_textures,
+                    &node.write_textures,
+                    &node.read_buffers,
+                    &node.write_buffers,
+                )
+            }
+        };
+
+        let shader_stages = match pass_id.pass_type {
+            PassType::Compute => vk::PipelineStageFlags::COMPUTE_SHADER,
+            PassType::Graphics => vk::PipelineStageFlags::FRAGMENT_SHADER,
+        };
+
+        let mut image_barriers = vec![];
+        for (texture, _) in read_textures {
+            let mut texture = texture.get();
+
+            let image_memory_barrier = vk::ImageMemoryBarrier::default()
+                .src_access_mask(texture.access_mask)
+                .dst_access_mask(vk::AccessFlags::SHADER_READ)
+                .old_layout(texture.layout)
+                .new_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
+                .image(texture.image)
+                .subresource_range(texture.subresource_range);
+
+            texture.access_mask = vk::AccessFlags::SHADER_READ;
+            texture.layout = vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL;
+            texture.stage_mask = shader_stages;
+            image_barriers.push(image_memory_barrier);
+        }
+
+        for texture in write_textures {
+            let mut texture = texture.get();
+
+            let image_memory_barrier = vk::ImageMemoryBarrier::default()
+                .src_access_mask(texture.access_mask)
+                .dst_access_mask(vk::AccessFlags::SHADER_WRITE)
+                .old_layout(texture.layout)
+                .new_layout(vk::ImageLayout::GENERAL)
+                .image(texture.image)
+                .subresource_range(texture.subresource_range);
+
+            texture.access_mask = vk::AccessFlags::SHADER_WRITE;
+            texture.layout = vk::ImageLayout::GENERAL;
+            texture.stage_mask = shader_stages;
+
+            image_barriers.push(image_memory_barrier);
+        }
+
+        let mut buffer_barriers = vec![];
+
+        for buffer in read_buffers {
+            let mut buffer = buffer.get();
+
+            let buffer_memory_barrier = vk::BufferMemoryBarrier::default()
+                .src_access_mask(buffer.access_mask)
+                .dst_access_mask(vk::AccessFlags::SHADER_READ)
+                .buffer(buffer.buffer)
+                .offset(0)
+                .size(buffer.size);
+
+            buffer.access_mask = vk::AccessFlags::SHADER_READ;
+            buffer.stage_mask = shader_stages;
+
+            buffer_barriers.push(buffer_memory_barrier);
+        }
+
+        for buffer in write_buffers {
+            let mut buffer = buffer.get();
+
+            let buffer_memory_barrier = vk::BufferMemoryBarrier::default()
+                .src_access_mask(buffer.access_mask)
+                .dst_access_mask(vk::AccessFlags::SHADER_WRITE)
+                .buffer(buffer.buffer)
+                .offset(0)
+                .size(buffer.size);
+
+            buffer.access_mask = vk::AccessFlags::SHADER_WRITE;
+            buffer.stage_mask = shader_stages;
+
+            buffer_barriers.push(buffer_memory_barrier);
+        }
+
+        unsafe {
+            self.ctx.device.cmd_pipeline_barrier(
+                command_buffer,
+                if let Some(last_pass) = self.last_ran_pass {
+                    match last_pass.pass_type {
+                        PassType::Compute => vk::PipelineStageFlags::COMPUTE_SHADER,
+                        PassType::Graphics => vk::PipelineStageFlags::FRAGMENT_SHADER,
+                    }
+                } else {
+                    vk::PipelineStageFlags::ALL_COMMANDS
+                },
+                shader_stages,
+                vk::DependencyFlags::empty(),
+                &[],
+                &buffer_barriers,
+                &image_barriers,
+            );
+        }
+    }
+
+    pub fn run_pass(&self, pass_id: &PassId, command_buffer: CommandBuffer) {
+        self.place_barriers(pass_id, command_buffer);
+
+        match pass_id.pass_type {
+            PassType::Compute => {
+                let node = self.compute_passes.get(pass_id).unwrap();
+                (node.callback)(&self, &node, command_buffer);
+            }
+            PassType::Graphics => {
+                let node = self.graphics_passes.get(pass_id).unwrap();
+                (node.callback)(&self, &node, command_buffer);
             }
         }
     }
 
-    pub fn run_pass(&self, pass_id: &PassId) {
-        let node_id = match pass_id.pass_type {
-            PassType::Compute => self.compute_passes.get(pass_id).unwrap().id,
-            PassType::Graphics => self.graphics_passes.get(pass_id).unwrap().id,
+    pub fn run_present_pass(
+        &self,
+        command_buffer: CommandBuffer,
+        fence: vk::Fence,
+        present_index: u32,
+    ) {
+        let pass_id = PassId {
+            label: "present",
+            pass_type: PassType::Graphics,
         };
+        // we place barriers here for the dependencies
+        self.place_barriers(&pass_id, command_buffer);
 
-        self.ctx.record_submit(|command_buffer| {
-            let read_textures = self
-                .read_texture_dependencies
-                .iter()
-                .filter_map(|(resource, pass_id)| {
-                    for &pass in pass_id {
-                        if pass == node_id {
-                            return Some(resource);
-                        }
-                    }
+        // here we handle the swapchain image layout transition
+        unsafe {
+            let render_swapchain = self.ctx.get_swapchain();
 
-                    return None;
-                })
-                .collect::<Vec<_>>();
+            let layout_transition_barriers = vk::ImageMemoryBarrier::default()
+                .image(render_swapchain.present_images[present_index as usize])
+                .src_access_mask(vk::AccessFlags::COLOR_ATTACHMENT_READ)
+                .dst_access_mask(vk::AccessFlags::COLOR_ATTACHMENT_WRITE)
+                .old_layout(vk::ImageLayout::UNDEFINED)
+                .new_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
+                .subresource_range(
+                    vk::ImageSubresourceRange::default()
+                        .aspect_mask(vk::ImageAspectFlags::COLOR)
+                        .layer_count(1)
+                        .level_count(1),
+                );
 
-            let write_textures = self
-                .write_texture_dependencies
-                .iter()
-                .filter_map(|(resource, pass_id)| {
-                    for &pass in pass_id {
-                        if pass == node_id {
-                            return Some(resource);
-                        }
-                    }
+            self.ctx.device.cmd_pipeline_barrier(
+                command_buffer,
+                vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
+                vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
+                vk::DependencyFlags::empty(),
+                &[],
+                &[],
+                &[layout_transition_barriers],
+            );
 
-                    return None;
-                })
-                .collect::<Vec<_>>();
+            let present_image_view = render_swapchain.present_image_views[present_index as usize];
+            let depth_image_view = self
+                .ctx
+                .get_texture_view(&render_swapchain.depth_image_handle)
+                .unwrap();
 
-            // println!("read_buffers: {:?}", read_buffers.len());
-            // println!("write_buffers: {:?}", write_buffers.len());
-            println!("read_textures: {:?}", read_textures.len());
-            println!("write_textures: {:?}", write_textures.len());
-
-            let mut read_barriers = vec![];
-            for texture in read_textures {
-                let mut texture = texture.get();
-                read_barriers.push(texture.transition_without_barrier(
-                    &self.ctx.device,
-                    command_buffer,
-                    &TransitionDesc {
-                        new_access_mask: vk::AccessFlags::SHADER_READ,
-                        new_layout: vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
-                        new_stage_mask: match pass_id.pass_type {
-                            PassType::Compute => vk::PipelineStageFlags::COMPUTE_SHADER,
-                            PassType::Graphics => vk::PipelineStageFlags::FRAGMENT_SHADER,
-                        },
+            let color_attachments = &[vk::RenderingAttachmentInfo::default()
+                .image_view(present_image_view)
+                .image_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
+                .load_op(vk::AttachmentLoadOp::CLEAR)
+                .store_op(vk::AttachmentStoreOp::STORE)
+                .clear_value(vk::ClearValue {
+                    color: vk::ClearColorValue {
+                        float32: [0.1, 0.1, 0.1, 1.0],
                     },
-                ));
-            }
+                })];
 
-            let mut write_barriers = vec![];
-            for texture in write_textures {
-                let mut texture = texture.get();
-                write_barriers.push(texture.transition_without_barrier(
-                    &self.ctx.device,
-                    command_buffer,
-                    &TransitionDesc {
-                        new_access_mask: vk::AccessFlags::SHADER_WRITE,
-                        new_layout: vk::ImageLayout::GENERAL,
-                        new_stage_mask: match pass_id.pass_type {
-                            PassType::Compute => vk::PipelineStageFlags::COMPUTE_SHADER,
-                            PassType::Graphics => vk::PipelineStageFlags::FRAGMENT_SHADER,
-                        },
+            let depth_attachment = &vk::RenderingAttachmentInfo::default()
+                .image_view(*depth_image_view)
+                .image_layout(vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL)
+                .load_op(vk::AttachmentLoadOp::CLEAR)
+                .store_op(vk::AttachmentStoreOp::STORE)
+                .clear_value(vk::ClearValue {
+                    depth_stencil: vk::ClearDepthStencilValue {
+                        depth: 1.0,
+                        stencil: 0,
                     },
-                ));
-            }
+                });
 
-            let shader_stages =  match pass_id.pass_type {
-                PassType::Compute => vk::PipelineStageFlags::COMPUTE_SHADER,
-                PassType::Graphics => vk::PipelineStageFlags::FRAGMENT_SHADER,
-            };
+            self.ctx
+                .begin_rendering(command_buffer, color_attachments, Some(depth_attachment));
 
-            
-            unsafe {
-                self.ctx.device.cmd_pipeline_barrier(
-                    command_buffer,
-                    vk::PipelineStageFlags::,
-                    vk::PipelineStageFlags::ALL_COMMANDS,
-                    vk::DependencyFlags::empty(),
-                    &[],
-                    &[],
-                    &barriers,
+            let pass = self
+                .graphics_passes
+                .get(&pass_id)
+                .expect("Present pass not found");
+
+            (pass.callback)(&self, &pass, command_buffer);
+
+            self.ctx.end_rendering(command_buffer);
+
+            let layout_transition_barriers = vk::ImageMemoryBarrier::default()
+                .image(render_swapchain.present_images[present_index as usize])
+                .src_access_mask(vk::AccessFlags::COLOR_ATTACHMENT_WRITE)
+                .dst_access_mask(vk::AccessFlags::COLOR_ATTACHMENT_READ)
+                .old_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
+                .new_layout(vk::ImageLayout::PRESENT_SRC_KHR)
+                .subresource_range(
+                    vk::ImageSubresourceRange::default()
+                        .aspect_mask(vk::ImageAspectFlags::COLOR)
+                        .layer_count(1)
+                        .level_count(1),
                 );
-            }
 
-            match pass_id.pass_type {
-                PassType::Compute => {
-                    let node = self.compute_passes.get(pass_id).unwrap();
-                    (node.callback)(&self, &node, &command_buffer);
-                }
-                PassType::Graphics => {
-                    let node = self.graphics_passes.get(pass_id).unwrap();
-                    (node.callback)(&self, &node, &command_buffer);
-                }
-            }
-        });
-    }
-
-    pub fn run_present_pass(&self) {
-        let present_index = self.ctx.acquire_present_index();
-
-        self.ctx.present_record(
-            present_index,
-            |command_buffer, color_view, depth_view| unsafe {
-                let color_attachments = &[vk::RenderingAttachmentInfo::default()
-                    .image_view(color_view)
-                    .image_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
-                    .load_op(vk::AttachmentLoadOp::CLEAR)
-                    .store_op(vk::AttachmentStoreOp::STORE)
-                    .clear_value(vk::ClearValue {
-                        color: vk::ClearColorValue {
-                            float32: [0.1, 0.1, 0.1, 1.0],
-                        },
-                    })];
-
-                let depth_attachment = &vk::RenderingAttachmentInfo::default()
-                    .image_view(depth_view)
-                    .image_layout(vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL)
-                    .load_op(vk::AttachmentLoadOp::CLEAR)
-                    .store_op(vk::AttachmentStoreOp::STORE)
-                    .clear_value(vk::ClearValue {
-                        depth_stencil: vk::ClearDepthStencilValue {
-                            depth: 1.0,
-                            stencil: 0,
-                        },
-                    });
-
-                self.ctx
-                    .begin_rendering(command_buffer, color_attachments, Some(depth_attachment));
-
-                let pipeline = self
-                    .ctx
-                    .graphics_pipelines
-                    .get_mut(&self.pipeline_handle)
-                    .unwrap();
-                pipeline.bind_pipeline(ctx, command_buffer);
-                drop(pipeline);
-
-                ctx.device.cmd_bind_vertex_buffers(
-                    command_buffer,
-                    0,
-                    std::slice::from_ref(
-                        &ctx.buffer_manager
-                            .get(&self.vertex_buffer)
-                            .unwrap()
-                            .buffer(),
-                    ),
-                    &[0],
-                );
-                self.ctx.device.cmd_bind_index_buffer(
-                    command_buffer,
-                    self.ctx
-                        .buffer_manager
-                        .get(&self.index_buffer)
-                        .unwrap()
-                        .buffer(),
-                    0,
-                    vk::IndexType::UINT16,
-                );
-                self.ctx
-                    .device
-                    .cmd_draw_indexed(command_buffer, 3, 1, 0, 0, 1);
-
-                self.ctx.end_rendering(command_buffer);
-            },
-        );
-
-        self.ctx.present_submit(present_index);
+            self.ctx.device.cmd_pipeline_barrier(
+                command_buffer,
+                vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
+                vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
+                vk::DependencyFlags::empty(),
+                &[],
+                &[],
+                &[layout_transition_barriers],
+            );
+        }
     }
 }
 
-pub struct ComputePass {
+pub struct ComputePass<W> {
     pub id: PassId,
     pub pipeline: ResourceHandle<ComputePipeline>,
-    callback: ComputePassCallback,
+    callback: ComputePassCallback<W>,
+    read_textures: Vec<(ResourceHandle<Texture>, Option<SamplerDesc>)>,
+    write_textures: Vec<ResourceHandle<Texture>>,
+    read_buffers: Vec<ResourceHandle<Buffer>>,
+    write_buffers: Vec<ResourceHandle<Buffer>>,
+    binding_order: Vec<ResourceId>,
 }
 
-impl ComputePass {
+impl<W> ComputePass<W> {
     pub fn execute(
         &self,
         ctx: &RenderContext,
@@ -440,13 +681,16 @@ impl ComputePass {
 
             pipeline.bind_descriptor_sets(ctx, command_buffer);
             pipeline.bind_pipeline(ctx, command_buffer);
-            ctx.device.cmd_push_constants(
-                command_buffer,
-                pipeline.layout,
-                ShaderStageFlags::COMPUTE,
-                0,
-                push_constants,
-            );
+
+            if !push_constants.is_empty() {
+                ctx.device.cmd_push_constants(
+                    command_buffer,
+                    pipeline.layout,
+                    ShaderStageFlags::COMPUTE,
+                    0,
+                    push_constants,
+                );
+            }
 
             ctx.device
                 .cmd_dispatch(command_buffer, group_count_x, group_count_y, group_count_z);
@@ -454,17 +698,22 @@ impl ComputePass {
     }
 }
 
-type ComputePassCallback = Box<dyn Fn(&RenderGraph, &ComputePass, &CommandBuffer)>;
+type ComputePassCallback<W> = Box<dyn Fn(&RenderGraph<W>, &ComputePass<W>, CommandBuffer)>;
 
-pub struct ComputePassBuilder<'a> {
+pub struct ComputePassBuilder<'a, 'rg, W> {
     id: PassId,
-    graph: &'a mut RenderGraph,
+    graph: &'a mut RenderGraph<'rg, W>,
     pipeline: Option<ResourceHandle<ComputePipeline>>,
-    callback: Option<ComputePassCallback>,
+    callback: Option<ComputePassCallback<W>>,
+    read_textures: Vec<(ResourceHandle<Texture>, Option<SamplerDesc>)>,
+    write_textures: Vec<ResourceHandle<Texture>>,
+    read_buffers: Vec<ResourceHandle<Buffer>>,
+    write_buffers: Vec<ResourceHandle<Buffer>>,
+    binding_order: Vec<ResourceId>,
 }
 
-impl<'a> ComputePassBuilder<'a> {
-    pub fn new(id: &'static str, graph: &'a mut RenderGraph) -> Self {
+impl<'a, 'rg, W> ComputePassBuilder<'a, 'rg, W> {
+    pub fn new(id: &'static str, graph: &'a mut RenderGraph<'rg, W>) -> Self {
         Self {
             id: PassId {
                 label: id,
@@ -473,6 +722,11 @@ impl<'a> ComputePassBuilder<'a> {
             graph,
             pipeline: None,
             callback: None,
+            binding_order: vec![],
+            read_buffers: vec![],
+            read_textures: vec![],
+            write_buffers: vec![],
+            write_textures: vec![],
         }
     }
 
@@ -486,68 +740,37 @@ impl<'a> ComputePassBuilder<'a> {
     }
 
     pub fn read_buffer(mut self, read_buffer_deps: ResourceHandle<Buffer>) -> Self {
-        self.graph
-            .read_buffer_dependencies
-            .entry(read_buffer_deps.clone())
-            .or_default()
-            .push(self.id);
-        self.graph
-            .binding_order
-            .entry(self.id)
-            .or_default()
-            .push(read_buffer_deps.id());
+        self.read_buffers.push(read_buffer_deps.clone());
+        self.binding_order.push(read_buffer_deps.id());
         self
     }
 
     pub fn write_buffer(mut self, write_buffer_deps: ResourceHandle<Buffer>) -> Self {
-        self.graph
-            .write_buffer_dependencies
-            .entry(write_buffer_deps.clone())
-            .or_default()
-            .push(self.id);
-
-        self.graph
-            .binding_order
-            .entry(self.id)
-            .or_default()
-            .push(write_buffer_deps.id());
-
+        self.write_buffers.push(write_buffer_deps.clone());
+        self.binding_order.push(write_buffer_deps.id());
         self
     }
 
-    pub fn read_texture(mut self, read_texture_deps: ResourceHandle<Texture>) -> Self {
-        self.graph
-            .read_texture_dependencies
-            .entry(read_texture_deps.clone())
-            .or_default()
-            .push(self.id);
-
-        self.graph
-            .binding_order
-            .entry(self.id)
-            .or_default()
-            .push(read_texture_deps.id());
+    pub fn read_texture(
+        mut self,
+        read_texture_deps: ResourceHandle<Texture>,
+        sampler_desc: Option<SamplerDesc>,
+    ) -> Self {
+        self.read_textures
+            .push((read_texture_deps.clone(), sampler_desc));
+        self.binding_order.push(read_texture_deps.id());
         self
     }
 
     pub fn write_texture(mut self, write_texture_deps: ResourceHandle<Texture>) -> Self {
-        self.graph
-            .write_texture_dependencies
-            .entry(write_texture_deps.clone())
-            .or_default()
-            .push(self.id);
-
-        self.graph
-            .binding_order
-            .entry(self.id)
-            .or_default()
-            .push(write_texture_deps.id());
+        self.write_textures.push(write_texture_deps.clone());
+        self.binding_order.push(write_texture_deps.id());
         self
     }
 
     pub fn callback(
         mut self,
-        callback: impl Fn(&RenderGraph, &ComputePass, &CommandBuffer) + 'static,
+        callback: impl Fn(&RenderGraph<W>, &ComputePass<W>, CommandBuffer) + 'static,
     ) -> Self {
         self.callback = Some(Box::new(callback));
         self
@@ -562,28 +785,69 @@ impl<'a> ComputePassBuilder<'a> {
             callback: self
                 .callback
                 .expect("Callback is required to build a ComputePass, cannot be ran without"),
+            binding_order: self.binding_order,
+            read_buffers: self.read_buffers,
+            read_textures: self.read_textures,
+            write_buffers: self.write_buffers,
+            write_textures: self.write_textures,
         };
         self.graph.compute_passes.insert(self.id, pass);
     }
 }
 
-type GraphicsPassCallback = Box<dyn Fn(&RenderGraph, &GraphicsPass, &CommandBuffer)>;
+type GraphicsPassCallback<W> = Box<dyn Fn(&RenderGraph<W>, &GraphicsPass<W>, CommandBuffer)>;
 
-pub struct GraphicsPass {
+pub struct GraphicsPass<W> {
     pub id: PassId,
     pub pipeline: ResourceHandle<GraphicsPipeline>,
-    callback: GraphicsPassCallback,
+    callback: GraphicsPassCallback<W>,
+    read_textures: Vec<(ResourceHandle<Texture>, Option<SamplerDesc>)>,
+    write_textures: Vec<ResourceHandle<Texture>>,
+    read_buffers: Vec<ResourceHandle<Buffer>>,
+    write_buffers: Vec<ResourceHandle<Buffer>>,
+    binding_order: Vec<ResourceId>,
 }
 
-pub struct GraphicsPassBuilder<'a> {
+impl<W> GraphicsPass<W> {
+    pub fn execute(
+        &self,
+        ctx: &RenderContext,
+        command_buffer: CommandBuffer,
+        push_constants: &[u8],
+    ) {
+        unsafe {
+            let mut pipeline = self.pipeline.get();
+
+            pipeline.bind_descriptor_sets(ctx, command_buffer);
+            pipeline.bind_pipeline(ctx, command_buffer);
+
+            if !push_constants.is_empty() {
+                ctx.device.cmd_push_constants(
+                    command_buffer,
+                    pipeline.layout,
+                    ShaderStageFlags::ALL_GRAPHICS,
+                    0,
+                    push_constants,
+                );
+            }
+        }
+    }
+}
+
+pub struct GraphicsPassBuilder<'a, 'rg, W> {
     id: PassId,
-    graph: &'a mut RenderGraph,
+    graph: &'a mut RenderGraph<'rg, W>,
     pipeline: Option<ResourceHandle<GraphicsPipeline>>,
-    callback: Option<GraphicsPassCallback>,
+    callback: Option<GraphicsPassCallback<W>>,
+    read_textures: Vec<(ResourceHandle<Texture>, Option<SamplerDesc>)>,
+    write_textures: Vec<ResourceHandle<Texture>>,
+    read_buffers: Vec<ResourceHandle<Buffer>>,
+    write_buffers: Vec<ResourceHandle<Buffer>>,
+    binding_order: Vec<ResourceId>,
 }
 
-impl<'a> GraphicsPassBuilder<'a> {
-    pub fn new(id: &'static str, graph: &'a mut RenderGraph) -> Self {
+impl<'a, 'rg, W> GraphicsPassBuilder<'a, 'rg, W> {
+    pub fn new(id: &'static str, graph: &'a mut RenderGraph<'rg, W>) -> Self {
         Self {
             id: PassId {
                 label: id,
@@ -592,6 +856,11 @@ impl<'a> GraphicsPassBuilder<'a> {
             graph,
             pipeline: None,
             callback: None,
+            read_buffers: vec![],
+            write_buffers: vec![],
+            read_textures: vec![],
+            write_textures: vec![],
+            binding_order: vec![],
         }
     }
 
@@ -605,79 +874,40 @@ impl<'a> GraphicsPassBuilder<'a> {
     }
 
     pub fn read_buffer(mut self, read_buffer_deps: ResourceHandle<Buffer>) -> Self {
-        self.graph
-            .read_buffer_dependencies
-            .entry(read_buffer_deps.clone())
-            .or_default()
-            .push(self.id);
-        self.graph
-            .binding_order
-            .entry(self.id)
-            .or_default()
-            .push(read_buffer_deps.id());
+        self.read_buffers.push(read_buffer_deps.clone());
+        self.binding_order.push(read_buffer_deps.id());
+
         self
     }
 
     pub fn write_buffer(mut self, write_buffer_deps: ResourceHandle<Buffer>) -> Self {
-        self.graph
-            .read_buffer_dependencies
-            .entry(write_buffer_deps.clone())
-            .or_default()
-            .push(self.id);
-
-        self.graph
-            .write_buffer_dependencies
-            .entry(write_buffer_deps.clone())
-            .or_default()
-            .push(self.id);
-
-        self.graph
-            .binding_order
-            .entry(self.id)
-            .or_default()
-            .push(write_buffer_deps.id());
+        self.write_buffers.push(write_buffer_deps.clone());
+        self.binding_order.push(write_buffer_deps.id());
 
         self
     }
 
-    pub fn read_texture(mut self, read_texture_deps: ResourceHandle<Texture>) -> Self {
-        self.graph
-            .read_texture_dependencies
-            .entry(read_texture_deps.clone())
-            .or_default()
-            .push(self.id);
+    pub fn read_texture(
+        mut self,
+        read_texture_deps: ResourceHandle<Texture>,
+        sampler_desc: Option<SamplerDesc>,
+    ) -> Self {
+        self.read_textures
+            .push((read_texture_deps.clone(), sampler_desc));
+        self.binding_order.push(read_texture_deps.id());
 
-        self.graph
-            .binding_order
-            .entry(self.id)
-            .or_default()
-            .push(read_texture_deps.id());
         self
     }
 
     pub fn write_texture(mut self, write_texture_deps: ResourceHandle<Texture>) -> Self {
-        self.graph
-            .read_texture_dependencies
-            .entry(write_texture_deps.clone())
-            .or_default()
-            .push(self.id);
-        self.graph
-            .write_texture_dependencies
-            .entry(write_texture_deps.clone())
-            .or_default()
-            .push(self.id);
-
-        self.graph
-            .binding_order
-            .entry(self.id)
-            .or_default()
-            .push(write_texture_deps.id());
+        self.write_textures.push(write_texture_deps.clone());
+        self.binding_order.push(write_texture_deps.id());
         self
     }
 
     pub fn callback(
         mut self,
-        callback: impl Fn(&RenderGraph, &GraphicsPass, &CommandBuffer) + 'static,
+        callback: impl Fn(&RenderGraph<W>, &GraphicsPass<W>, CommandBuffer) + 'static,
     ) -> Self {
         self.callback = Some(Box::new(callback));
         self
@@ -692,6 +922,11 @@ impl<'a> GraphicsPassBuilder<'a> {
             callback: self
                 .callback
                 .expect("Callback is required to build a ComputePass, cannot be ran without"),
+            binding_order: self.binding_order,
+            read_buffers: self.read_buffers,
+            read_textures: self.read_textures,
+            write_buffers: self.write_buffers,
+            write_textures: self.write_textures,
         };
         self.graph.graphics_passes.insert(self.id, pass);
     }

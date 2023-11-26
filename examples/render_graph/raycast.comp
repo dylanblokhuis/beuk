@@ -10,5 +10,5 @@ void main() {
     // vec4 color = imageLoad(srcImage, storePos);
     // color.rgb = import_test() - color.rgb; // Invert colors
 
-    imageStore(dstImage, storePos, vec4(1.0, 0.0, 0.0, 1.0));
+    imageStore(dstImage, storePos, vec4(1.0, 1.0, 0.0, 1.0));
 }
