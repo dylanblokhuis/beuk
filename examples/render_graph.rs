@@ -1,17 +1,14 @@
 use std::sync::Arc;
 
 use ::smallvec::smallvec;
-use ash::vk::{self, BufferUsageFlags, PresentModeKHR};
+use ash::vk::{self, PresentModeKHR};
 use beuk::{
-    buffer::{Buffer, BufferDescriptor},
     compute_pipeline::ComputePipelineDescriptor,
     ctx::{RenderContextDescriptor, SamplerDesc},
     graph::{ComputePass, ComputePassBuilder, GraphicsPass, GraphicsPassBuilder, RenderGraph},
     graphics_pipeline::{
-        BlendState, FragmentState, GraphicsPipelineDescriptor, PrimitiveState, VertexBufferLayout,
-        VertexState,
+        FragmentState, GraphicsPipelineDescriptor, PrimitiveState, PushConstantRange, VertexState,
     },
-    memory::ResourceHandle,
     shaders::ShaderDescriptor,
 };
 use raw_window_handle::{HasRawDisplayHandle, HasRawWindowHandle};
@@ -21,6 +18,12 @@ use winit::{
     event_loop::EventLoop,
     window::WindowBuilder,
 };
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+struct PushConstants {
+    color: [f32; 4],
+}
 
 fn main() {
     simple_logger::SimpleLogger::new().init().unwrap();
@@ -103,7 +106,11 @@ fn main() {
                 ..Default::default()
             }),
             prepend_descriptor_sets: None,
-            push_constant_range: None,
+            push_constant_range: Some(PushConstantRange {
+                stages: beuk::graphics_pipeline::ShaderStages::Compute,
+                offset: 0,
+                range: std::mem::size_of::<PushConstants>() as u32,
+            }),
         })
         .write_texture(attachment_handle.clone())
         .callback(run_raycast)
@@ -119,10 +126,14 @@ fn main() {
                 ..Default::default()
             }),
             prepend_descriptor_sets: None,
-            push_constant_range: None,
+            push_constant_range: Some(PushConstantRange {
+                stages: beuk::graphics_pipeline::ShaderStages::Compute,
+                offset: 0,
+                range: std::mem::size_of::<PushConstants>() as u32,
+            }),
         })
         .write_texture(attachment_handle.clone())
-        .callback(run_raycast)
+        .callback(run_raycast_two)
         .build();
 
     ComputePassBuilder::new("raycast-3", &mut graph)
@@ -135,10 +146,14 @@ fn main() {
                 ..Default::default()
             }),
             prepend_descriptor_sets: None,
-            push_constant_range: None,
+            push_constant_range: Some(PushConstantRange {
+                stages: beuk::graphics_pipeline::ShaderStages::Compute,
+                offset: 0,
+                range: std::mem::size_of::<PushConstants>() as u32,
+            }),
         })
         .write_texture(attachment_handle.clone())
-        .callback(run_raycast)
+        .callback(run_raycast_three)
         .build();
 
     // ComputePassBuilder::new("raycast-4", &mut graph)
@@ -248,7 +263,50 @@ fn main() {
 }
 
 fn run_raycast(rg: &RenderGraph<()>, pass: &ComputePass<()>, command_buffer: vk::CommandBuffer) {
-    pass.execute(&rg.ctx, command_buffer, &[], 1280 / 16, 720 / 16, 1);
+    pass.execute(
+        &rg.ctx,
+        command_buffer,
+        &bytemuck::bytes_of(&PushConstants {
+            color: [1.0, 0.0, 0.0, 1.0],
+        }),
+        1280 / 16,
+        720 / 16,
+        1,
+    );
+}
+
+fn run_raycast_three(
+    rg: &RenderGraph<()>,
+    pass: &ComputePass<()>,
+    command_buffer: vk::CommandBuffer,
+) {
+    pass.execute(
+        &rg.ctx,
+        command_buffer,
+        &bytemuck::bytes_of(&PushConstants {
+            color: [0.0, 1.0, 0.0, 1.0],
+        }),
+        8,
+        8,
+        1,
+    );
+}
+
+fn run_raycast_two(
+    rg: &RenderGraph<()>,
+    pass: &ComputePass<()>,
+    command_buffer: vk::CommandBuffer,
+) {
+    pass.execute(
+        &rg.ctx,
+        command_buffer,
+        &bytemuck::bytes_of(&PushConstants {
+            color: [0.0, 0.0, 1.0, 1.0],
+        }),
+        16,
+        16,
+        1,
+    );
 }
 
 fn run_present(rg: &RenderGraph<()>, pass: &GraphicsPass<()>, command_buffer: vk::CommandBuffer) {

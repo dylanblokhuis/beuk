@@ -352,7 +352,7 @@ impl<'rg, W> RenderGraph<'rg, W> {
         self.ctx.record(&command_buffer, |command_buffer| {
             // check if present is an entry node, which means there are no other nodes needed to be ran
             if self.built_entry_nodes.contains(&&present_pass) {
-                self.run_present_pass(command_buffer, fence, present_index);
+                self.run_present_pass(command_buffer, present_index);
                 return;
             }
 
@@ -363,7 +363,7 @@ impl<'rg, W> RenderGraph<'rg, W> {
                 for pass in graph.neighbors_directed(*entry_node, petgraph::Direction::Outgoing) {
                     // println!("pass: {:?}", pass);
                     if pass == present_pass {
-                        self.run_present_pass(command_buffer, fence, present_index);
+                        self.run_present_pass(command_buffer, present_index);
                     } else {
                         self.run_pass(&pass, command_buffer);
                     }
@@ -548,12 +548,7 @@ impl<'rg, W> RenderGraph<'rg, W> {
         }
     }
 
-    pub fn run_present_pass(
-        &self,
-        command_buffer: CommandBuffer,
-        fence: vk::Fence,
-        present_index: u32,
-    ) {
+    pub fn run_present_pass(&self, command_buffer: CommandBuffer, present_index: u32) {
         let pass_id = PassId {
             label: "present",
             pass_type: PassType::Graphics,
