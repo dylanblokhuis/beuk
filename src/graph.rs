@@ -34,7 +34,6 @@ pub struct RenderGraph<'rg, W> {
     // track in which order the resources are accessed by the added passes
     current_built_graph: Option<DiGraphMap<PassId, ()>>,
     built_entry_nodes: Vec<PassId>,
-    last_ran_pass: Option<PassId>,
     pub world: Option<&'rg W>,
 }
 
@@ -47,7 +46,6 @@ impl<'rg, W> RenderGraph<'rg, W> {
             current_built_graph: None,
             built_entry_nodes: vec![],
             world: None,
-            last_ran_pass: None,
         }
     }
 
@@ -350,22 +348,23 @@ impl<'rg, W> RenderGraph<'rg, W> {
         let command_buffer = binding.lock().unwrap();
         let fence = command_buffer.fence;
         self.ctx.record(&command_buffer, |command_buffer| {
+            let mut last_stage = None;
             // check if present is an entry node, which means there are no other nodes needed to be ran
             if self.built_entry_nodes.contains(&&present_pass) {
-                self.run_present_pass(command_buffer, present_index);
+                self.run_present_pass(command_buffer, present_index, &mut last_stage);
                 return;
             }
 
             for entry_node in self.built_entry_nodes.iter() {
                 // println!("entry_node: {:?}", entry_node);
-                self.run_pass(&entry_node, command_buffer);
+                self.run_pass(&entry_node, command_buffer, &mut last_stage);
 
                 for pass in graph.neighbors_directed(*entry_node, petgraph::Direction::Outgoing) {
                     // println!("pass: {:?}", pass);
                     if pass == present_pass {
-                        self.run_present_pass(command_buffer, present_index);
+                        self.run_present_pass(command_buffer, present_index, &mut last_stage);
                     } else {
-                        self.run_pass(&pass, command_buffer);
+                        self.run_pass(&pass, command_buffer, &mut last_stage);
                     }
                 }
             }
@@ -416,7 +415,12 @@ impl<'rg, W> RenderGraph<'rg, W> {
         self.world = None;
     }
 
-    fn place_barriers(&self, pass_id: &PassId, command_buffer: CommandBuffer) {
+    fn place_barriers(
+        &self,
+        pass_id: &PassId,
+        command_buffer: CommandBuffer,
+        last_stage: &mut Option<vk::PipelineStageFlags>,
+    ) {
         let (read_textures, write_textures, read_buffers, write_buffers) = match pass_id.pass_type {
             PassType::Compute => {
                 let node = self.compute_passes.get(pass_id).unwrap();
@@ -516,11 +520,8 @@ impl<'rg, W> RenderGraph<'rg, W> {
         unsafe {
             self.ctx.device.cmd_pipeline_barrier(
                 command_buffer,
-                if let Some(last_pass) = self.last_ran_pass {
-                    match last_pass.pass_type {
-                        PassType::Compute => vk::PipelineStageFlags::COMPUTE_SHADER,
-                        PassType::Graphics => vk::PipelineStageFlags::FRAGMENT_SHADER,
-                    }
+                if let Some(stage) = last_stage {
+                    *stage
                 } else {
                     vk::PipelineStageFlags::ALL_COMMANDS
                 },
@@ -533,28 +534,40 @@ impl<'rg, W> RenderGraph<'rg, W> {
         }
     }
 
-    pub fn run_pass(&self, pass_id: &PassId, command_buffer: CommandBuffer) {
-        self.place_barriers(pass_id, command_buffer);
+    pub fn run_pass(
+        &self,
+        pass_id: &PassId,
+        command_buffer: CommandBuffer,
+        last_stage: &mut Option<vk::PipelineStageFlags>,
+    ) {
+        self.place_barriers(pass_id, command_buffer, last_stage);
 
         match pass_id.pass_type {
             PassType::Compute => {
                 let node = self.compute_passes.get(pass_id).unwrap();
+                *last_stage = Some(vk::PipelineStageFlags::COMPUTE_SHADER);
                 (node.callback)(&self, &node, command_buffer);
             }
             PassType::Graphics => {
                 let node = self.graphics_passes.get(pass_id).unwrap();
+                *last_stage = Some(vk::PipelineStageFlags::FRAGMENT_SHADER);
                 (node.callback)(&self, &node, command_buffer);
             }
         }
     }
 
-    pub fn run_present_pass(&self, command_buffer: CommandBuffer, present_index: u32) {
+    pub fn run_present_pass(
+        &self,
+        command_buffer: CommandBuffer,
+        present_index: u32,
+        last_stage: &mut Option<vk::PipelineStageFlags>,
+    ) {
         let pass_id = PassId {
             label: "present",
             pass_type: PassType::Graphics,
         };
         // we place barriers here for the dependencies
-        self.place_barriers(&pass_id, command_buffer);
+        self.place_barriers(&pass_id, command_buffer, last_stage);
 
         // here we handle the swapchain image layout transition
         unsafe {
