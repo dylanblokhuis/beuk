@@ -3,6 +3,7 @@ use std::sync::Arc;
 use ::smallvec::smallvec;
 use ash::vk::{self, PresentModeKHR};
 use beuk::{
+    buffer::BufferDescriptor,
     compute_pipeline::ComputePipelineDescriptor,
     ctx::{RenderContextDescriptor, SamplerDesc},
     graph::{ComputePass, ComputePassBuilder, GraphicsPass, GraphicsPassBuilder, RenderGraph},
@@ -19,9 +20,15 @@ use winit::{
     window::WindowBuilder,
 };
 
-#[repr(C)]
+#[repr(C, align(16))]
 #[derive(Debug, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 struct PushConstants {
+    color: [f32; 4],
+}
+
+#[repr(C, align(16))]
+#[derive(Debug, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+struct TestBuffer {
     color: [f32; 4],
 }
 
@@ -73,28 +80,18 @@ fn main() {
         true,
     );
 
-    // let albedo_handle = ctx.create_texture(
-    //     "albedo",
-    //     &vk::ImageCreateInfo {
-    //         image_type: vk::ImageType::TYPE_2D,
-    //         format: swapchain.surface_format.format,
-    //         extent: vk::Extent3D {
-    //             width: swapchain.surface_resolution.width,
-    //             height: swapchain.surface_resolution.height,
-    //             depth: 1,
-    //         },
-    //         usage: vk::ImageUsageFlags::COLOR_ATTACHMENT
-    //             | vk::ImageUsageFlags::TRANSFER_SRC
-    //             | vk::ImageUsageFlags::SAMPLED
-    //             | vk::ImageUsageFlags::STORAGE,
-    //         samples: vk::SampleCountFlags::TYPE_1,
-    //         mip_levels: 1,
-    //         array_layers: 1,
-    //         sharing_mode: vk::SharingMode::EXCLUSIVE,
-    //         ..Default::default()
-    //     },
-    //     true,
-    // );
+    let buffer = ctx.create_buffer_with_data(
+        &BufferDescriptor {
+            debug_name: "test".into(),
+            location: gpu_allocator::MemoryLocation::GpuOnly,
+            usage: vk::BufferUsageFlags::UNIFORM_BUFFER,
+            ..Default::default()
+        },
+        bytemuck::bytes_of(&TestBuffer {
+            color: [1.0, 0.0, 1.0, 1.0],
+        }),
+        0,
+    );
 
     ComputePassBuilder::new("raycast", &mut graph)
         .pipeline(ComputePipelineDescriptor {
@@ -113,6 +110,7 @@ fn main() {
             }),
         })
         .write_texture(attachment_handle.clone())
+        .read_buffer(buffer.clone())
         .callback(run_raycast)
         .build();
 
@@ -133,6 +131,7 @@ fn main() {
             }),
         })
         .write_texture(attachment_handle.clone())
+        .read_buffer(buffer.clone())
         .callback(run_raycast_two)
         .build();
 
@@ -153,40 +152,9 @@ fn main() {
             }),
         })
         .write_texture(attachment_handle.clone())
+        .read_buffer(buffer.clone())
         .callback(run_raycast_three)
         .build();
-
-    // ComputePassBuilder::new("raycast-4", &mut graph)
-    //     .pipeline(ComputePipelineDescriptor {
-    //         shader: ctx.create_shader(ShaderDescriptor {
-    //             entry_point: "main".into(),
-    //             kind: beuk::shaders::ShaderKind::Compute,
-    //             optimization: beuk::shaders::ShaderOptimization::None,
-    //             source: include_str!("./render_graph/raycast.comp").into(),
-    //             ..Default::default()
-    //         }),
-    //         prepend_descriptor_sets: None,
-    //         push_constant_range: None,
-    //     })
-    //     .write_texture(albedo_handle.clone())
-    //     .callback(run_raycast)
-    //     .build();
-
-    // ComputePassBuilder::new("raycast-5", &mut graph)
-    //     .pipeline(ComputePipelineDescriptor {
-    //         shader: ctx.create_shader(ShaderDescriptor {
-    //             entry_point: "main".into(),
-    //             kind: beuk::shaders::ShaderKind::Compute,
-    //             optimization: beuk::shaders::ShaderOptimization::None,
-    //             source: include_str!("./render_graph/raycast.comp").into(),
-    //             ..Default::default()
-    //         }),
-    //         prepend_descriptor_sets: None,
-    //         push_constant_range: None,
-    //     })
-    //     .write_texture(albedo_handle.clone())
-    //     .callback(run_raycast)
-    //     .build();
 
     GraphicsPassBuilder::new("present", &mut graph)
         .pipeline(GraphicsPipelineDescriptor {

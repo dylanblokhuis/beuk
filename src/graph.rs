@@ -162,6 +162,17 @@ impl<'rg, W> RenderGraph<'rg, W> {
                         *resource_id,
                     )
                     .unwrap();
+                    if pipeline.set_layout_info[set as usize]
+                        .get(&(binding_index as u32))
+                        .is_none()
+                    {
+                        log::error!(
+                            "RenderGraph: Descriptor set layout does not support binding index {}",
+                            binding_index
+                        );
+                        continue;
+                    }
+
                     let buffer = self.ctx.buffer_manager.get_mut(&handle).unwrap();
 
                     pipeline.queue_descriptor_buffer(
@@ -235,11 +246,6 @@ impl<'rg, W> RenderGraph<'rg, W> {
             let mut pipeline = pass.pipeline.get();
 
             for (binding_index, resource_id) in pass.binding_order.iter().enumerate() {
-                println!(
-                    "binding_index: {} {}",
-                    binding_index, resource_id.manager_id
-                );
-
                 let set: u32 = 0;
                 if resource_id.manager_id == self.ctx.buffer_manager.id {
                     let handle = ResourceManager::<Buffer>::handle_from_id(
@@ -247,8 +253,19 @@ impl<'rg, W> RenderGraph<'rg, W> {
                         *resource_id,
                     )
                     .unwrap();
-                    let buffer = self.ctx.buffer_manager.get_mut(&handle).unwrap();
 
+                    if pipeline.set_layout_info[set as usize]
+                        .get(&(binding_index as u32))
+                        .is_none()
+                    {
+                        log::error!(
+                            "RenderGraph: Descriptor set layout does not support binding index {}",
+                            binding_index
+                        );
+                        continue;
+                    }
+
+                    let buffer = self.ctx.buffer_manager.get_mut(&handle).unwrap();
                     pipeline.queue_descriptor_buffer(
                         set,
                         binding_index as u32,

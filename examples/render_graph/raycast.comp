@@ -3,7 +3,9 @@
 layout(local_size_x = 16, local_size_y = 16) in;
 
 layout(binding = 0, rgba8) uniform image2D dstImage;
-
+layout(binding = 1) readonly buffer SrcBuffer {
+    vec4 color;
+} test_buffer;
 
 // push constants
 layout(push_constant) uniform PushConstants {
@@ -13,8 +15,5 @@ layout(push_constant) uniform PushConstants {
 void main() {
     ivec2 storePos = ivec2(gl_GlobalInvocationID.xy);
 
-    // vec4 color = imageLoad(srcImage, storePos);
-    // color.rgb = import_test() - color.rgb; // Invert colors
-
-    imageStore(dstImage, storePos, pushConstants.color);
+    imageStore(dstImage, storePos, mix(test_buffer.color, pushConstants.color, 0.5));
 }
