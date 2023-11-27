@@ -344,8 +344,7 @@ impl<'rg, W> RenderGraph<'rg, W> {
         };
 
         let present_index = self.ctx.acquire_present_index();
-        let binding = self.ctx.get_command_buffer();
-        let command_buffer = binding.lock().unwrap();
+        let command_buffer = self.ctx.get_command_buffer();
         let fence = command_buffer.fence;
         self.ctx.record(&command_buffer, |command_buffer| {
             let mut last_stage = None;
@@ -379,10 +378,9 @@ impl<'rg, W> RenderGraph<'rg, W> {
                 .command_buffers(std::slice::from_ref(&command_buffer.command_buffer))
                 .signal_semaphores(std::slice::from_ref(&self.ctx.rendering_complete_semaphore));
 
-            let queue = self.ctx.present_queue.lock().unwrap();
             self.ctx
                 .device
-                .queue_submit(*queue, &[submit_info], fence)
+                .queue_submit(self.ctx.present_queue, &[submit_info], fence)
                 .expect("queue submit failed.");
             self.ctx
                 .device
@@ -399,9 +397,7 @@ impl<'rg, W> RenderGraph<'rg, W> {
 
             let result = swapchain
                 .swapchain_loader
-                .queue_present(*queue, &present_info);
-
-            drop(queue);
+                .queue_present(self.ctx.present_queue, &present_info);
 
             match result {
                 Ok(_) => false,

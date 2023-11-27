@@ -143,8 +143,6 @@ thread_local! {
 pub struct CommandBuffer {
     pub command_buffer: vk::CommandBuffer,
     pub fence: vk::Fence,
-    #[allow(dead_code)]
-    device: Arc<Device>,
 }
 
 pub struct RenderContext {
@@ -178,14 +176,14 @@ pub struct RenderContext {
     pub command_thread_pool: Arc<ThreadPool>,
     pub pdevice: vk::PhysicalDevice,
     pub queue_family_index: u32,
-    pub present_queue: Arc<Mutex<vk::Queue>>,
+    pub present_queue: vk::Queue,
     #[cfg(feature = "rt")]
     pub as_extension: ash::extensions::khr::AccelerationStructure,
 
     pub surface: vk::SurfaceKHR,
 
     pub pool: vk::CommandPool,
-    pub main_command_buffer: Arc<Mutex<CommandBuffer>>,
+    pub main_command_buffer: CommandBuffer,
 
     pub present_complete_semaphore: vk::Semaphore,
     pub rendering_complete_semaphore: vk::Semaphore,
@@ -490,7 +488,6 @@ impl RenderContext {
             let compute_pipelines = ResourceManager::new(3, device.clone(), allocator.clone(), 32);
             let shader_manager = ResourceManager::new(4, device.clone(), allocator.clone(), 32 * 2);
 
-            let present_queue = Arc::new(Mutex::new(present_queue));
             let thread_id = std::thread::current().id();
 
             #[cfg(feature = "rt")]
@@ -542,11 +539,10 @@ impl RenderContext {
                 present_queue,
 
                 pool,
-                main_command_buffer: Arc::new(Mutex::new(CommandBuffer {
+                main_command_buffer: CommandBuffer {
                     command_buffer: main_command_buffer,
                     fence: main_commands_reuse_fence,
-                    device: device.clone(),
-                })),
+                },
 
                 present_complete_semaphore,
                 rendering_complete_semaphore,
@@ -722,11 +718,10 @@ impl RenderContext {
             }
         }
 
-        let present_queue = self.present_queue.lock().unwrap();
         let (old_surface_resolution, new_surface_resolution) = {
             unsafe {
                 self.device
-                    .queue_wait_idle(*present_queue)
+                    .queue_wait_idle(self.present_queue)
                     .expect("Failed to wait device idle!")
             };
             let old_surface_resolution = self.get_swapchain().surface_resolution;
@@ -790,33 +785,17 @@ impl RenderContext {
     }
 
     /// this can only run on a thread created by the thread pool
-    pub fn get_command_buffer(&self) -> Arc<Mutex<CommandBuffer>> {
-        while self.is_resizing.load(Ordering::Relaxed) {
-            std::thread::yield_now();
-        }
-        if let Some(thread_index) = rayon::current_thread_index() {
-            let threaded_command_buffers = self.threaded_command_buffers.read().unwrap();
-            let lock = threaded_command_buffers
-                .get(&thread_index)
-                .expect("Command buffer not found inside thread pool.")
-                .clone();
-
-            drop(threaded_command_buffers);
-
-            lock
-        } else {
-            self.main_command_buffer.clone()
-        }
+    pub fn get_command_buffer(&self) -> &CommandBuffer {        
+        &self.main_command_buffer
     }
 
     /// Submits the command buffer to the queue and waits for it to finish.
     pub fn submit(&self, command_buffer: &CommandBuffer) {
-        let queue = self.present_queue.lock().unwrap();
         unsafe {
             let submit_info = vk::SubmitInfo::default()
                 .command_buffers(std::slice::from_ref(&command_buffer.command_buffer));
             self.device
-                .queue_submit(*queue, &[submit_info], command_buffer.fence)
+                .queue_submit(self.present_queue, &[submit_info], command_buffer.fence)
                 .map_err(Self::handle_error)
                 .unwrap();
             self.device
@@ -826,29 +805,26 @@ impl RenderContext {
     }
 
     pub fn record_submit(&self, f: impl FnOnce(vk::CommandBuffer)) {
-        let lock = self.get_command_buffer();
-        let lock = lock.lock().unwrap();
-        self.record(&lock, f);
-        self.submit(&lock);
+        let command_buffer = self.get_command_buffer();
+        self.record(&command_buffer, f);
+        self.submit(&command_buffer);
     }
 
     /// Submits the command buffer to the present queue with corresponding semaphores and waits for it to finish.
     #[tracing::instrument(skip(self))]
     pub fn present_submit(&self, present_index: u32) {
-        let lock = self.get_command_buffer();
-        let lock = lock.lock().unwrap();
+        let command_buffer = self.get_command_buffer();
         let submit_info = vk::SubmitInfo::default()
             .wait_semaphores(std::slice::from_ref(&self.present_complete_semaphore))
             .wait_dst_stage_mask(&[vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT])
-            .command_buffers(std::slice::from_ref(&lock.command_buffer))
+            .command_buffers(std::slice::from_ref(&command_buffer.command_buffer))
             .signal_semaphores(std::slice::from_ref(&self.rendering_complete_semaphore));
         unsafe {
-            let queue = self.present_queue.lock().unwrap();
             self.device
-                .queue_submit(*queue, &[submit_info], lock.fence)
+                .queue_submit(self.present_queue, &[submit_info], command_buffer.fence)
                 .expect("queue submit failed.");
             self.device
-                .wait_for_fences(&[lock.fence], true, std::u64::MAX)
+                .wait_for_fences(&[command_buffer.fence], true, std::u64::MAX)
                 .unwrap();
 
             let wait_semaphors = [self.rendering_complete_semaphore];
@@ -862,9 +838,7 @@ impl RenderContext {
             let result = self
                 .get_swapchain()
                 .swapchain_loader
-                .queue_present(*queue, &present_info);
-
-            drop(queue);
+                .queue_present(self.present_queue, &present_info);
 
             match result {
                 Ok(_) => false,
@@ -921,9 +895,8 @@ impl RenderContext {
         present_index: u32,
         f: F,
     ) {
-        let lock = self.get_command_buffer();
-        let lock = lock.lock().unwrap();
-        self.record(&lock, |command_buffer| unsafe {
+        let command_buffer = self.get_command_buffer();
+        self.record(&command_buffer, |command_buffer| unsafe {
             let render_swapchain = self.get_swapchain();
             let layout_transition_barriers = vk::ImageMemoryBarrier::default()
                 .image(render_swapchain.present_images[present_index as usize])
@@ -1089,8 +1062,7 @@ impl RenderContext {
                         x,
                         Arc::new(Mutex::new(CommandBuffer {
                             command_buffer: command_buffers[0],
-                            fence,
-                            device: device.clone(),
+                            fence
                         })),
                     );
                 });
@@ -1635,7 +1607,7 @@ impl Drop for RenderContext {
             self.device
                 .destroy_semaphore(self.rendering_complete_semaphore, None);
             self.device
-                .destroy_fence(self.main_command_buffer.lock().unwrap().fence, None);
+                .destroy_fence(self.main_command_buffer.fence, None);
 
             self.cleanup_swapchain();
 
