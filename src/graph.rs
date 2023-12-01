@@ -7,7 +7,7 @@ use ash::vk::{self, CommandBuffer, ShaderStageFlags};
 use petgraph::{graphmap::DiGraphMap, visit::IntoNodeReferences};
 
 use crate::{
-    buffer::Buffer,
+    buffer::{Buffer, BufferDescriptor},
     compute_pipeline::{ComputePipeline, ComputePipelineDescriptor},
     ctx::{RenderContext, SamplerDesc},
     graphics_pipeline::{GraphicsPipeline, GraphicsPipelineDescriptor},
@@ -464,6 +464,13 @@ impl<'rg, W> RenderGraph<'rg, W> {
         for (texture, _) in read_textures {
             let mut texture = texture.get();
 
+            if texture.access_mask == vk::AccessFlags::SHADER_READ
+                && texture.stage_mask == shader_stages
+                && texture.layout == vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL
+            {
+                continue;
+            }
+
             let image_memory_barrier = vk::ImageMemoryBarrier::default()
                 .src_access_mask(texture.access_mask)
                 .dst_access_mask(vk::AccessFlags::SHADER_READ)
@@ -501,6 +508,12 @@ impl<'rg, W> RenderGraph<'rg, W> {
         for buffer in read_buffers {
             let mut buffer = buffer.get();
 
+            if (buffer.access_mask == vk::AccessFlags::SHADER_READ)
+                && (buffer.stage_mask == shader_stages)
+            {
+                continue;
+            }
+
             let buffer_memory_barrier = vk::BufferMemoryBarrier::default()
                 .src_access_mask(buffer.access_mask)
                 .dst_access_mask(vk::AccessFlags::SHADER_READ)
@@ -530,20 +543,22 @@ impl<'rg, W> RenderGraph<'rg, W> {
             buffer_barriers.push(buffer_memory_barrier);
         }
 
-        unsafe {
-            self.ctx.device.cmd_pipeline_barrier(
-                command_buffer,
-                if let Some(stage) = last_stage {
-                    *stage
-                } else {
-                    vk::PipelineStageFlags::ALL_COMMANDS
-                },
-                shader_stages,
-                vk::DependencyFlags::empty(),
-                &[],
-                &buffer_barriers,
-                &image_barriers,
-            );
+        if !image_barriers.is_empty() || !buffer_barriers.is_empty() {
+            unsafe {
+                self.ctx.device.cmd_pipeline_barrier(
+                    command_buffer,
+                    if let Some(stage) = last_stage {
+                        *stage
+                    } else {
+                        vk::PipelineStageFlags::ALL_COMMANDS
+                    },
+                    shader_stages,
+                    vk::DependencyFlags::empty(),
+                    &[],
+                    &buffer_barriers,
+                    &image_barriers,
+                );
+            }
         }
     }
 
@@ -673,6 +688,36 @@ impl<'rg, W> RenderGraph<'rg, W> {
                 &[layout_transition_barriers],
             );
         }
+    }
+
+    /// The input buffer is a host visible buffer that has already been written to
+    /// this function will queue the buffer to be copied to a device local buffer
+    pub fn queue_buffer(&mut self, staging_buffer: &mut Buffer) {
+        assert!(
+            staging_buffer.has_been_written_to,
+            "Buffer has not been written to"
+        );
+        assert!(
+            staging_buffer
+                .usage
+                .contains(vk::BufferUsageFlags::TRANSFER_SRC),
+            "Buffer usage must contain TRANSFER_SRC"
+        );
+        assert!(
+            staging_buffer.location == gpu_allocator::MemoryLocation::CpuToGpu,
+            "Buffer must be in CpuToGpu memory location for it be copied to a device local buffer"
+        );
+
+        let mut device_local_usage = staging_buffer.usage;
+        device_local_usage |= vk::BufferUsageFlags::TRANSFER_DST;
+        device_local_usage &= !vk::BufferUsageFlags::TRANSFER_SRC;
+
+        let buffer = self.ctx.create_buffer(&BufferDescriptor {
+            debug_name: "device_local_buffer".into(),
+            location: gpu_allocator::MemoryLocation::GpuOnly,
+            usage: device_local_usage,
+            size: staging_buffer.size,
+        });
     }
 }
 

@@ -98,7 +98,6 @@ fn main() {
             shader: ctx.create_shader(ShaderDescriptor {
                 entry_point: "main".into(),
                 kind: beuk::shaders::ShaderKind::Compute,
-                optimization: beuk::shaders::ShaderOptimization::None,
                 source: "./examples/render_graph/raycast.comp".into(),
                 ..Default::default()
             }),
@@ -119,7 +118,6 @@ fn main() {
             shader: ctx.create_shader(ShaderDescriptor {
                 entry_point: "main".into(),
                 kind: beuk::shaders::ShaderKind::Compute,
-                optimization: beuk::shaders::ShaderOptimization::None,
                 source: include_str!("./render_graph/raycast.comp").into(),
                 ..Default::default()
             }),
@@ -140,7 +138,6 @@ fn main() {
             shader: ctx.create_shader(ShaderDescriptor {
                 entry_point: "main".into(),
                 kind: beuk::shaders::ShaderKind::Compute,
-                optimization: beuk::shaders::ShaderOptimization::None,
                 source: include_str!("./render_graph/raycast.comp").into(),
                 ..Default::default()
             }),

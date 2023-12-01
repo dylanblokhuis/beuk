@@ -6,7 +6,7 @@ use crate::memory::ResourceHooks;
 
 pub type MemoryLocation = gpu_allocator::MemoryLocation;
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct Buffer {
     pub debug_name: &'static str,
     pub buffer: vk::Buffer,
@@ -17,6 +17,26 @@ pub struct Buffer {
     pub offset: u64,
     pub access_mask: vk::AccessFlags,
     pub stage_mask: vk::PipelineStageFlags,
+    pub usage: vk::BufferUsageFlags,
+    pub location: MemoryLocation,
+}
+
+impl Default for Buffer {
+    fn default() -> Self {
+        Self {
+            debug_name: Default::default(),
+            buffer: Default::default(),
+            allocation: Default::default(),
+            size: Default::default(),
+            device_addr: Default::default(),
+            has_been_written_to: Default::default(),
+            offset: Default::default(),
+            access_mask: Default::default(),
+            stage_mask: Default::default(),
+            usage: Default::default(),
+            location: MemoryLocation::CpuToGpu,
+        }
+    }
 }
 
 impl ResourceHooks for Buffer {
@@ -34,7 +54,6 @@ pub struct BufferDescriptor {
     pub debug_name: &'static str,
     pub size: vk::DeviceSize,
     pub usage: vk::BufferUsageFlags,
-    /// GpuOnly will be a slower allocation, but it will be faster on the gpu
     pub location: MemoryLocation,
 }
 
@@ -111,6 +130,8 @@ impl Buffer {
             offset,
             access_mask: vk::AccessFlags::empty(),
             stage_mask: vk::PipelineStageFlags::empty(),
+            location,
+            usage,
         }
     }
 

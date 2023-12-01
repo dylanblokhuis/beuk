@@ -3,7 +3,7 @@
 layout(local_size_x = 16, local_size_y = 16) in;
 
 layout(binding = 0, rgba8) uniform image2D dstImage;
-layout(binding = 1) readonly buffer SrcBuffer {
+layout(binding = 1) uniform SrcBuffer {
     vec4 color;
 } test_buffer;
 
