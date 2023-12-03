@@ -227,7 +227,12 @@ fn main() {
     });
 }
 
-fn run_raycast(rg: &RenderGraph<()>, pass: &ComputePass<()>, command_buffer: vk::CommandBuffer) {
+fn run_raycast(
+    rg: &RenderGraph<()>,
+    pass: &ComputePass<()>,
+    command_buffer: vk::CommandBuffer,
+    _data: &(),
+) {
     pass.execute(
         &rg.ctx,
         command_buffer,
@@ -244,6 +249,7 @@ fn run_raycast_three(
     rg: &RenderGraph<()>,
     pass: &ComputePass<()>,
     command_buffer: vk::CommandBuffer,
+    _data: &(),
 ) {
     pass.execute(
         &rg.ctx,
@@ -261,6 +267,7 @@ fn run_raycast_two(
     rg: &RenderGraph<()>,
     pass: &ComputePass<()>,
     command_buffer: vk::CommandBuffer,
+    _data: &(),
 ) {
     pass.execute(
         &rg.ctx,
@@ -274,7 +281,12 @@ fn run_raycast_two(
     );
 }
 
-fn run_present(rg: &RenderGraph<()>, pass: &GraphicsPass<()>, command_buffer: vk::CommandBuffer) {
+fn run_present(
+    rg: &RenderGraph<()>,
+    pass: &GraphicsPass<()>,
+    command_buffer: vk::CommandBuffer,
+    _data: &(),
+) {
     unsafe {
         pass.execute(&rg.ctx, command_buffer, &[]);
 

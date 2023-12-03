@@ -27,17 +27,19 @@ pub struct PassId {
     pass_type: PassType,
 }
 
-pub struct RenderGraph<'rg, W> {
+pub struct RenderGraph<W> {
     pub ctx: Arc<RenderContext>,
     pub(super) compute_passes: BTreeMap<PassId, ComputePass<W>>,
     pub(super) graphics_passes: BTreeMap<PassId, GraphicsPass<W>>,
     // track in which order the resources are accessed by the added passes
     current_built_graph: Option<DiGraphMap<PassId, ()>>,
     built_entry_nodes: Vec<PassId>,
-    pub world: Option<&'rg W>,
 }
 
-impl<'rg, W> RenderGraph<'rg, W> {
+unsafe impl<W> Send for RenderGraph<W> {}
+unsafe impl<W> Sync for RenderGraph<W> {}
+
+impl<W> RenderGraph<W> {
     pub fn new(ctx: Arc<RenderContext>) -> Self {
         Self {
             ctx,
@@ -45,7 +47,6 @@ impl<'rg, W> RenderGraph<'rg, W> {
             graphics_passes: BTreeMap::new(),
             current_built_graph: None,
             built_entry_nodes: vec![],
-            world: None,
         }
     }
 
@@ -349,11 +350,14 @@ impl<'rg, W> RenderGraph<'rg, W> {
         self.current_built_graph = Some(graph);
     }
 
-    pub fn run(&mut self, w: &'rg W) {
+    pub fn is_built(&self) -> bool {
+        self.current_built_graph.is_some()
+    }
+
+    pub fn run(&mut self, w: &W) {
         let Some(graph) = &self.current_built_graph else {
             panic!("RenderGraph: Cannot run graph without building it first");
         };
-        self.world = Some(w);
 
         let present_pass = PassId {
             label: "present",
@@ -367,20 +371,20 @@ impl<'rg, W> RenderGraph<'rg, W> {
             let mut last_stage = None;
             // check if present is an entry node, which means there are no other nodes needed to be ran
             if self.built_entry_nodes.contains(&&present_pass) {
-                self.run_present_pass(command_buffer, present_index, &mut last_stage);
+                self.run_present_pass(command_buffer, present_index, &mut last_stage, w);
                 return;
             }
 
             for entry_node in self.built_entry_nodes.iter() {
                 // println!("entry_node: {:?}", entry_node);
-                self.run_pass(&entry_node, command_buffer, &mut last_stage);
+                self.run_pass(&entry_node, command_buffer, &mut last_stage, w);
 
                 for pass in graph.neighbors_directed(*entry_node, petgraph::Direction::Outgoing) {
                     // println!("pass: {:?}", pass);
                     if pass == present_pass {
-                        self.run_present_pass(command_buffer, present_index, &mut last_stage);
+                        self.run_present_pass(command_buffer, present_index, &mut last_stage, w);
                     } else {
-                        self.run_pass(&pass, command_buffer, &mut last_stage);
+                        self.run_pass(&pass, command_buffer, &mut last_stage, w);
                     }
                 }
             }
@@ -424,8 +428,6 @@ impl<'rg, W> RenderGraph<'rg, W> {
                 },
             };
         }
-
-        self.world = None;
     }
 
     fn place_barriers(
@@ -567,6 +569,7 @@ impl<'rg, W> RenderGraph<'rg, W> {
         pass_id: &PassId,
         command_buffer: CommandBuffer,
         last_stage: &mut Option<vk::PipelineStageFlags>,
+        w: &W,
     ) {
         self.place_barriers(pass_id, command_buffer, last_stage);
 
@@ -574,12 +577,12 @@ impl<'rg, W> RenderGraph<'rg, W> {
             PassType::Compute => {
                 let node = self.compute_passes.get(pass_id).unwrap();
                 *last_stage = Some(vk::PipelineStageFlags::COMPUTE_SHADER);
-                (node.callback)(&self, &node, command_buffer);
+                (node.callback)(&self, &node, command_buffer, w);
             }
             PassType::Graphics => {
                 let node = self.graphics_passes.get(pass_id).unwrap();
                 *last_stage = Some(vk::PipelineStageFlags::FRAGMENT_SHADER);
-                (node.callback)(&self, &node, command_buffer);
+                (node.callback)(&self, &node, command_buffer, w);
             }
         }
     }
@@ -589,6 +592,7 @@ impl<'rg, W> RenderGraph<'rg, W> {
         command_buffer: CommandBuffer,
         present_index: u32,
         last_stage: &mut Option<vk::PipelineStageFlags>,
+        w: &W,
     ) {
         let pass_id = PassId {
             label: "present",
@@ -661,7 +665,7 @@ impl<'rg, W> RenderGraph<'rg, W> {
                 .get(&pass_id)
                 .expect("Present pass not found");
 
-            (pass.callback)(&self, &pass, command_buffer);
+            (pass.callback)(&self, &pass, command_buffer, w);
 
             self.ctx.end_rendering(command_buffer);
 
@@ -764,11 +768,11 @@ impl<W> ComputePass<W> {
     }
 }
 
-type ComputePassCallback<W> = Box<dyn Fn(&RenderGraph<W>, &ComputePass<W>, CommandBuffer)>;
+type ComputePassCallback<W> = Box<dyn Fn(&RenderGraph<W>, &ComputePass<W>, CommandBuffer, &W)>;
 
-pub struct ComputePassBuilder<'a, 'rg, W> {
+pub struct ComputePassBuilder<'a, W> {
     id: PassId,
-    graph: &'a mut RenderGraph<'rg, W>,
+    graph: &'a mut RenderGraph<W>,
     pipeline: Option<ResourceHandle<ComputePipeline>>,
     callback: Option<ComputePassCallback<W>>,
     read_textures: Vec<(ResourceHandle<Texture>, Option<SamplerDesc>)>,
@@ -778,8 +782,8 @@ pub struct ComputePassBuilder<'a, 'rg, W> {
     binding_order: Vec<ResourceId>,
 }
 
-impl<'a, 'rg, W> ComputePassBuilder<'a, 'rg, W> {
-    pub fn new(id: &'static str, graph: &'a mut RenderGraph<'rg, W>) -> Self {
+impl<'a, W> ComputePassBuilder<'a, W> {
+    pub fn new(id: &'static str, graph: &'a mut RenderGraph<W>) -> Self {
         Self {
             id: PassId {
                 label: id,
@@ -836,7 +840,7 @@ impl<'a, 'rg, W> ComputePassBuilder<'a, 'rg, W> {
 
     pub fn callback(
         mut self,
-        callback: impl Fn(&RenderGraph<W>, &ComputePass<W>, CommandBuffer) + 'static,
+        callback: impl Fn(&RenderGraph<W>, &ComputePass<W>, CommandBuffer, &W) + 'static,
     ) -> Self {
         self.callback = Some(Box::new(callback));
         self
@@ -861,7 +865,7 @@ impl<'a, 'rg, W> ComputePassBuilder<'a, 'rg, W> {
     }
 }
 
-type GraphicsPassCallback<W> = Box<dyn Fn(&RenderGraph<W>, &GraphicsPass<W>, CommandBuffer)>;
+type GraphicsPassCallback<W> = Box<dyn Fn(&RenderGraph<W>, &GraphicsPass<W>, CommandBuffer, &W)>;
 
 pub struct GraphicsPass<W> {
     pub id: PassId,
@@ -900,9 +904,9 @@ impl<W> GraphicsPass<W> {
     }
 }
 
-pub struct GraphicsPassBuilder<'a, 'rg, W> {
+pub struct GraphicsPassBuilder<'a, W> {
     id: PassId,
-    graph: &'a mut RenderGraph<'rg, W>,
+    graph: &'a mut RenderGraph<W>,
     pipeline: Option<ResourceHandle<GraphicsPipeline>>,
     callback: Option<GraphicsPassCallback<W>>,
     read_textures: Vec<(ResourceHandle<Texture>, Option<SamplerDesc>)>,
@@ -912,8 +916,8 @@ pub struct GraphicsPassBuilder<'a, 'rg, W> {
     binding_order: Vec<ResourceId>,
 }
 
-impl<'a, 'rg, W> GraphicsPassBuilder<'a, 'rg, W> {
-    pub fn new(id: &'static str, graph: &'a mut RenderGraph<'rg, W>) -> Self {
+impl<'a, W> GraphicsPassBuilder<'a, W> {
+    pub fn new(id: &'static str, graph: &'a mut RenderGraph<W>) -> Self {
         Self {
             id: PassId {
                 label: id,
@@ -973,7 +977,7 @@ impl<'a, 'rg, W> GraphicsPassBuilder<'a, 'rg, W> {
 
     pub fn callback(
         mut self,
-        callback: impl Fn(&RenderGraph<W>, &GraphicsPass<W>, CommandBuffer) + 'static,
+        callback: impl Fn(&RenderGraph<W>, &GraphicsPass<W>, CommandBuffer, &W) + 'static,
     ) -> Self {
         self.callback = Some(Box::new(callback));
         self
