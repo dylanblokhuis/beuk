@@ -354,10 +354,30 @@ impl<W> RenderGraph<W> {
         self.current_built_graph.is_some()
     }
 
-    pub fn run(&mut self, w: &W) {
+    pub fn run(&mut self, w: &mut W) {
         let Some(graph) = &self.current_built_graph else {
             panic!("RenderGraph: Cannot run graph without building it first");
         };
+
+        // first we run all the update passes in the graph
+        // TODO: parallelize this?
+        for nodes in graph.node_references() {
+            let pass_id = &nodes.0;
+            match pass_id.pass_type {
+                PassType::Compute => {
+                    let node = self.compute_passes.get(pass_id).unwrap();
+                    if let Some(update_callback) = &node.update_callback {
+                        update_callback(self, node, w);
+                    }
+                }
+                PassType::Graphics => {
+                    let node = self.graphics_passes.get(pass_id).unwrap();
+                    if let Some(update_callback) = &node.update_callback {
+                        update_callback(self, node, w);
+                    }
+                }
+            };
+        }
 
         let present_pass = PassId {
             label: "present",
@@ -569,7 +589,7 @@ impl<W> RenderGraph<W> {
         pass_id: &PassId,
         command_buffer: CommandBuffer,
         last_stage: &mut Option<vk::PipelineStageFlags>,
-        w: &W,
+        w: &mut W,
     ) {
         self.place_barriers(pass_id, command_buffer, last_stage);
 
@@ -577,12 +597,12 @@ impl<W> RenderGraph<W> {
             PassType::Compute => {
                 let node = self.compute_passes.get(pass_id).unwrap();
                 *last_stage = Some(vk::PipelineStageFlags::COMPUTE_SHADER);
-                (node.callback)(&self, &node, command_buffer, w);
+                (node.record_callback)(&self, &node, command_buffer, w);
             }
             PassType::Graphics => {
                 let node = self.graphics_passes.get(pass_id).unwrap();
                 *last_stage = Some(vk::PipelineStageFlags::FRAGMENT_SHADER);
-                (node.callback)(&self, &node, command_buffer, w);
+                (node.record_callback)(&self, &node, command_buffer, w);
             }
         }
     }
@@ -592,7 +612,7 @@ impl<W> RenderGraph<W> {
         command_buffer: CommandBuffer,
         present_index: u32,
         last_stage: &mut Option<vk::PipelineStageFlags>,
-        w: &W,
+        w: &mut W,
     ) {
         let pass_id = PassId {
             label: "present",
@@ -665,7 +685,7 @@ impl<W> RenderGraph<W> {
                 .get(&pass_id)
                 .expect("Present pass not found");
 
-            (pass.callback)(&self, &pass, command_buffer, w);
+            (pass.record_callback)(&self, &pass, command_buffer, w);
 
             self.ctx.end_rendering(command_buffer);
 
@@ -728,7 +748,8 @@ impl<W> RenderGraph<W> {
 pub struct ComputePass<W> {
     pub id: PassId,
     pub pipeline: ResourceHandle<ComputePipeline>,
-    callback: ComputePassCallback<W>,
+    record_callback: ComputePassRecordCallback<W>,
+    update_callback: Option<ComputePassUpdateCallback<W>>,
     read_textures: Vec<(ResourceHandle<Texture>, Option<SamplerDesc>)>,
     write_textures: Vec<ResourceHandle<Texture>>,
     read_buffers: Vec<ResourceHandle<Buffer>>,
@@ -768,13 +789,17 @@ impl<W> ComputePass<W> {
     }
 }
 
-type ComputePassCallback<W> = Box<dyn Fn(&RenderGraph<W>, &ComputePass<W>, CommandBuffer, &W)>;
+type ComputePassRecordCallback<W> =
+    Box<dyn Fn(&RenderGraph<W>, &ComputePass<W>, CommandBuffer, &mut W)>;
+
+type ComputePassUpdateCallback<W> = Box<dyn Fn(&RenderGraph<W>, &ComputePass<W>, &mut W)>;
 
 pub struct ComputePassBuilder<'a, W> {
     id: PassId,
     graph: &'a mut RenderGraph<W>,
     pipeline: Option<ResourceHandle<ComputePipeline>>,
-    callback: Option<ComputePassCallback<W>>,
+    record_callback: Option<ComputePassRecordCallback<W>>,
+    update_callback: Option<ComputePassUpdateCallback<W>>,
     read_textures: Vec<(ResourceHandle<Texture>, Option<SamplerDesc>)>,
     write_textures: Vec<ResourceHandle<Texture>>,
     read_buffers: Vec<ResourceHandle<Buffer>>,
@@ -791,7 +816,8 @@ impl<'a, W> ComputePassBuilder<'a, W> {
             },
             graph,
             pipeline: None,
-            callback: None,
+            record_callback: None,
+            update_callback: None,
             binding_order: vec![],
             read_buffers: vec![],
             read_textures: vec![],
@@ -838,11 +864,21 @@ impl<'a, W> ComputePassBuilder<'a, W> {
         self
     }
 
-    pub fn callback(
+    /// This callback is ran when the command buffer is being recorded
+    pub fn record_callback(
         mut self,
-        callback: impl Fn(&RenderGraph<W>, &ComputePass<W>, CommandBuffer, &W) + 'static,
+        callback: impl Fn(&RenderGraph<W>, &ComputePass<W>, CommandBuffer, &mut W) + 'static,
     ) -> Self {
-        self.callback = Some(Box::new(callback));
+        self.record_callback = Some(Box::new(callback));
+        self
+    }
+
+    /// This callback is ran before any command buffer recording is started, so you can update descriptor sets etc.
+    pub fn update_callback(
+        mut self,
+        callback: impl Fn(&RenderGraph<W>, &ComputePass<W>, &mut W) + 'static,
+    ) -> Self {
+        self.update_callback = Some(Box::new(callback));
         self
     }
 
@@ -852,9 +888,10 @@ impl<'a, W> ComputePassBuilder<'a, W> {
             pipeline: self
                 .pipeline
                 .expect("Pipeline is required to build a ComputePass"),
-            callback: self
-                .callback
-                .expect("Callback is required to build a ComputePass, cannot be ran without"),
+            record_callback: self.record_callback.expect(
+                "A record callback is required to build a ComputePass, cannot be ran without",
+            ),
+            update_callback: self.update_callback,
             binding_order: self.binding_order,
             read_buffers: self.read_buffers,
             read_textures: self.read_textures,
@@ -865,12 +902,15 @@ impl<'a, W> ComputePassBuilder<'a, W> {
     }
 }
 
-type GraphicsPassCallback<W> = Box<dyn Fn(&RenderGraph<W>, &GraphicsPass<W>, CommandBuffer, &W)>;
+type GraphicsPassRecordCallback<W> =
+    Box<dyn Fn(&RenderGraph<W>, &GraphicsPass<W>, CommandBuffer, &mut W)>;
+type GraphicsPassUpdateCallback<W> = Box<dyn Fn(&RenderGraph<W>, &GraphicsPass<W>, &mut W)>;
 
 pub struct GraphicsPass<W> {
     pub id: PassId,
     pub pipeline: ResourceHandle<GraphicsPipeline>,
-    callback: GraphicsPassCallback<W>,
+    record_callback: GraphicsPassRecordCallback<W>,
+    update_callback: Option<GraphicsPassUpdateCallback<W>>,
     read_textures: Vec<(ResourceHandle<Texture>, Option<SamplerDesc>)>,
     write_textures: Vec<ResourceHandle<Texture>>,
     read_buffers: Vec<ResourceHandle<Buffer>>,
@@ -908,7 +948,8 @@ pub struct GraphicsPassBuilder<'a, W> {
     id: PassId,
     graph: &'a mut RenderGraph<W>,
     pipeline: Option<ResourceHandle<GraphicsPipeline>>,
-    callback: Option<GraphicsPassCallback<W>>,
+    record_callback: Option<GraphicsPassRecordCallback<W>>,
+    update_callback: Option<GraphicsPassUpdateCallback<W>>,
     read_textures: Vec<(ResourceHandle<Texture>, Option<SamplerDesc>)>,
     write_textures: Vec<ResourceHandle<Texture>>,
     read_buffers: Vec<ResourceHandle<Buffer>>,
@@ -925,7 +966,8 @@ impl<'a, W> GraphicsPassBuilder<'a, W> {
             },
             graph,
             pipeline: None,
-            callback: None,
+            record_callback: None,
+            update_callback: None,
             read_buffers: vec![],
             write_buffers: vec![],
             read_textures: vec![],
@@ -975,11 +1017,21 @@ impl<'a, W> GraphicsPassBuilder<'a, W> {
         self
     }
 
-    pub fn callback(
+    /// This callback is ran when the command buffer is being recorded
+    pub fn record_callback(
         mut self,
-        callback: impl Fn(&RenderGraph<W>, &GraphicsPass<W>, CommandBuffer, &W) + 'static,
+        callback: impl Fn(&RenderGraph<W>, &GraphicsPass<W>, CommandBuffer, &mut W) + 'static,
     ) -> Self {
-        self.callback = Some(Box::new(callback));
+        self.record_callback = Some(Box::new(callback));
+        self
+    }
+
+    /// This callback is ran before any command buffer recording is started, so you can update descriptor sets etc.
+    pub fn update_callback(
+        mut self,
+        callback: impl Fn(&RenderGraph<W>, &GraphicsPass<W>, &mut W) + 'static,
+    ) -> Self {
+        self.update_callback = Some(Box::new(callback));
         self
     }
 
@@ -989,9 +1041,10 @@ impl<'a, W> GraphicsPassBuilder<'a, W> {
             pipeline: self
                 .pipeline
                 .expect("Pipeline is required to build a ComputePass"),
-            callback: self
-                .callback
-                .expect("Callback is required to build a ComputePass, cannot be ran without"),
+            record_callback: self.record_callback.expect(
+                "A record callback is required to build a ComputePass, cannot be ran without",
+            ),
+            update_callback: self.update_callback,
             binding_order: self.binding_order,
             read_buffers: self.read_buffers,
             read_textures: self.read_textures,

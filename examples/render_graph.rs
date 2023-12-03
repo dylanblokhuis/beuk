@@ -110,7 +110,7 @@ fn main() {
         })
         .write_texture(attachment_handle.clone())
         .read_buffer(buffer.clone())
-        .callback(run_raycast)
+        .record_callback(run_raycast)
         .build();
 
     ComputePassBuilder::new("raycast-2", &mut graph)
@@ -130,7 +130,7 @@ fn main() {
         })
         .write_texture(attachment_handle.clone())
         .read_buffer(buffer.clone())
-        .callback(run_raycast_two)
+        .record_callback(run_raycast_two)
         .build();
 
     ComputePassBuilder::new("raycast-3", &mut graph)
@@ -150,7 +150,7 @@ fn main() {
         })
         .write_texture(attachment_handle.clone())
         .read_buffer(buffer.clone())
-        .callback(run_raycast_three)
+        .record_callback(run_raycast_three)
         .build();
 
     GraphicsPassBuilder::new("present", &mut graph)
@@ -195,11 +195,11 @@ fn main() {
                 texel_filter: vk::Filter::NEAREST,
             }),
         )
-        .callback(run_present)
+        .record_callback(run_present)
         .build();
 
     graph.order_and_build_graph();
-    // graph.run(&());
+    // graph.run(&mut ());
 
     event_loop.run_return(|event, _, control_flow| match event {
         Event::WindowEvent {
@@ -221,7 +221,7 @@ fn main() {
             window.request_redraw();
         }
         Event::RedrawRequested(_) => {
-            graph.run(&());
+            graph.run(&mut ());
         }
         _ => (),
     });
@@ -231,7 +231,7 @@ fn run_raycast(
     rg: &RenderGraph<()>,
     pass: &ComputePass<()>,
     command_buffer: vk::CommandBuffer,
-    _data: &(),
+    _data: &mut (),
 ) {
     pass.execute(
         &rg.ctx,
@@ -249,7 +249,7 @@ fn run_raycast_three(
     rg: &RenderGraph<()>,
     pass: &ComputePass<()>,
     command_buffer: vk::CommandBuffer,
-    _data: &(),
+    _data: &mut (),
 ) {
     pass.execute(
         &rg.ctx,
@@ -267,7 +267,7 @@ fn run_raycast_two(
     rg: &RenderGraph<()>,
     pass: &ComputePass<()>,
     command_buffer: vk::CommandBuffer,
-    _data: &(),
+    _data: &mut (),
 ) {
     pass.execute(
         &rg.ctx,
@@ -285,7 +285,7 @@ fn run_present(
     rg: &RenderGraph<()>,
     pass: &GraphicsPass<()>,
     command_buffer: vk::CommandBuffer,
-    _data: &(),
+    _data: &mut (),
 ) {
     unsafe {
         pass.execute(&rg.ctx, command_buffer, &[]);
