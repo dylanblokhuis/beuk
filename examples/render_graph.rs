@@ -6,7 +6,7 @@ use beuk::{
     buffer::BufferDescriptor,
     compute_pipeline::ComputePipelineDescriptor,
     ctx::{RenderContextDescriptor, SamplerDesc},
-    graph::{ComputePass, ComputePassBuilder, GraphicsPass, GraphicsPassBuilder, RenderGraph},
+    graph::{ComputePass, ComputePassBuilder, GraphicsPass, GraphicsPassBuilder, RenderGraph, PassId},
     graphics_pipeline::{
         FragmentState, GraphicsPipelineDescriptor, PrimitiveState, PushConstantRange, VertexState,
     },
@@ -197,6 +197,11 @@ fn main() {
         )
         .record_callback(run_present)
         .build();
+
+    // graph.add_buffer_to_pass(PassId {
+    //         label: "raycast".into(),
+    //         pass_type: beuk::graph::PassType::Compute,
+    // }, buffer, write)
 
     graph.order_and_build_graph();
     // graph.run(&mut ());

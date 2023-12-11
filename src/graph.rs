@@ -23,8 +23,8 @@ pub enum PassType {
 
 #[derive(Hash, PartialEq, Eq, Clone, PartialOrd, Ord, Copy, Debug)]
 pub struct PassId {
-    label: &'static str,
-    pass_type: PassType,
+    pub label: &'static str,
+    pub pass_type: PassType,
 }
 
 pub struct RenderGraph<W> {
@@ -49,6 +49,7 @@ impl<W> RenderGraph<W> {
             built_entry_nodes: vec![],
         }
     }
+
 
     pub fn order_and_build_graph(&mut self) {
         // Create a new directed graph
@@ -711,6 +712,54 @@ impl<W> RenderGraph<W> {
                 &[],
                 &[layout_transition_barriers],
             );
+        }
+    }
+
+    pub fn add_buffer_to_pass(&mut self, pass_id: &PassId, buffer: ResourceHandle<Buffer>, write: bool) {
+        match pass_id.pass_type {
+            PassType::Compute => {
+                let node = self.compute_passes.get_mut(pass_id).unwrap();
+                if write {
+                    node.write_buffers.push(buffer);
+                } else {
+                    node.read_buffers.push(buffer);
+                }
+            }
+            PassType::Graphics => {
+                let node = self.graphics_passes.get_mut(pass_id).unwrap();
+                if write {
+                    node.write_buffers.push(buffer);
+                } else {
+                    node.read_buffers.push(buffer);
+                }
+            }
+        }
+    }
+
+    pub fn add_texture_to_pass(
+        &mut self,
+        pass_id: &PassId,
+        texture: ResourceHandle<Texture>,
+        sampler_desc: Option<SamplerDesc>,
+        write: bool,
+    ) {
+        match pass_id.pass_type {
+            PassType::Compute => {
+                let node = self.compute_passes.get_mut(pass_id).unwrap();
+                if write {
+                    node.write_textures.push(texture);
+                } else {
+                    node.read_textures.push((texture, sampler_desc));
+                }
+            }
+            PassType::Graphics => {
+                let node = self.graphics_passes.get_mut(pass_id).unwrap();
+                if write {
+                    node.write_textures.push(texture);
+                } else {
+                    node.read_textures.push((texture, sampler_desc));
+                }
+            }
         }
     }
 
