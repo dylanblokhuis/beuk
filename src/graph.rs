@@ -50,7 +50,6 @@ impl<W> RenderGraph<W> {
         }
     }
 
-
     pub fn order_and_build_graph(&mut self) {
         // Create a new directed graph
         let mut graph = DiGraphMap::<PassId, ()>::new();
@@ -384,7 +383,6 @@ impl<W> RenderGraph<W> {
             label: "present",
             pass_type: PassType::Graphics,
         };
-
         let present_index = self.ctx.acquire_present_index();
         let command_buffer = self.ctx.get_command_buffer();
         let fence = command_buffer.fence;
@@ -715,10 +713,16 @@ impl<W> RenderGraph<W> {
         }
     }
 
-    pub fn add_buffer_to_pass(&mut self, pass_id: &PassId, buffer: ResourceHandle<Buffer>, write: bool) {
+    pub fn add_buffer_to_pass(
+        &mut self,
+        pass_id: &PassId,
+        buffer: ResourceHandle<Buffer>,
+        write: bool,
+    ) {
         match pass_id.pass_type {
             PassType::Compute => {
                 let node = self.compute_passes.get_mut(pass_id).unwrap();
+                node.binding_order.push(buffer.id());
                 if write {
                     node.write_buffers.push(buffer);
                 } else {
@@ -727,6 +731,7 @@ impl<W> RenderGraph<W> {
             }
             PassType::Graphics => {
                 let node = self.graphics_passes.get_mut(pass_id).unwrap();
+                node.binding_order.push(buffer.id());
                 if write {
                     node.write_buffers.push(buffer);
                 } else {
@@ -746,6 +751,7 @@ impl<W> RenderGraph<W> {
         match pass_id.pass_type {
             PassType::Compute => {
                 let node = self.compute_passes.get_mut(pass_id).unwrap();
+                node.binding_order.push(texture.id());
                 if write {
                     node.write_textures.push(texture);
                 } else {
@@ -754,6 +760,7 @@ impl<W> RenderGraph<W> {
             }
             PassType::Graphics => {
                 let node = self.graphics_passes.get_mut(pass_id).unwrap();
+                node.binding_order.push(texture.id());
                 if write {
                     node.write_textures.push(texture);
                 } else {
