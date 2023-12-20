@@ -785,7 +785,7 @@ impl RenderContext {
     }
 
     /// this can only run on a thread created by the thread pool
-    pub fn get_command_buffer(&self) -> &CommandBuffer {        
+    pub fn get_command_buffer(&self) -> &CommandBuffer {
         &self.main_command_buffer
     }
 
@@ -1062,7 +1062,7 @@ impl RenderContext {
                         x,
                         Arc::new(Mutex::new(CommandBuffer {
                             command_buffer: command_buffers[0],
-                            fence
+                            fence,
                         })),
                     );
                 });
