@@ -383,14 +383,15 @@ impl<W> RenderGraph<W> {
             label: "present",
             pass_type: PassType::Graphics,
         };
-        let present_index = self.ctx.acquire_present_index();
         let command_buffer = self.ctx.get_command_buffer();
         let fence = command_buffer.fence;
+        let mut present_index = None;
         self.ctx.record(&command_buffer, |command_buffer| {
             let mut last_stage = None;
             // check if present is an entry node, which means there are no other nodes needed to be ran
             if self.built_entry_nodes.contains(&&present_pass) {
-                self.run_present_pass(command_buffer, present_index, &mut last_stage, w);
+                present_index = Some(self.ctx.acquire_present_index());
+                self.run_present_pass(command_buffer, present_index.unwrap(), &mut last_stage, w);
                 return;
             }
 
@@ -401,13 +402,23 @@ impl<W> RenderGraph<W> {
                 for pass in graph.neighbors_directed(*entry_node, petgraph::Direction::Outgoing) {
                     // println!("pass: {:?}", pass);
                     if pass == present_pass {
-                        self.run_present_pass(command_buffer, present_index, &mut last_stage, w);
+                        present_index = Some(self.ctx.acquire_present_index());
+                        self.run_present_pass(
+                            command_buffer,
+                            present_index.unwrap(),
+                            &mut last_stage,
+                            w,
+                        );
                     } else {
                         self.run_pass(&pass, command_buffer, &mut last_stage, w);
                     }
                 }
             }
         });
+
+        let Some(present_index) = present_index else {
+            return;
+        };
 
         unsafe {
             let swapchain = self.ctx.get_swapchain();
